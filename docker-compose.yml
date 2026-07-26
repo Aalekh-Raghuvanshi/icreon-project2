@@ -1,0 +1,12 @@
+services:
+  ai-swe-agent:
+    build: .
+    image: ai-swe-agent:latest
+    container_name: ai-swe-agent
+    env_file:
+      - .env
+    volumes:
+      # Persist cloned repositories / agent workspace across container restarts.
+      - ./workspace:/app/workspace
+    stdin_open: true # `docker compose run` needs this for the interactive CLI prompt
+    tty: true
