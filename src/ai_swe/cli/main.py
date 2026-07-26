@@ -1,20 +1,28 @@
 """
-Command-line interface for the AI SWE Agent foundation.
+Command-line interface for the AI SWE Agent.
 
-Today's CLI does exactly what this milestone requires and nothing more:
+Available commands:
 
-    1. Ask the user for a GitHub repository URL.
-    2. Connect to the Git and Filesystem MCP servers.
-    3. Clone the repository (via `clone_repository`, Git MCP).
-    4. List every file in the cloned repository (via `list_repository_files`,
-       Filesystem MCP).
-    5. Print a success summary.
+  Default command (backwards-compatible):
+    python main.py [--repo-url URL]
+    ai-swe [--repo-url URL]
 
-Run it with:
+      Ask for a GitHub repository URL, clone it via MCP servers, list its
+      files, and report success.
+
+  Repository understanding command (new):
+    ai-swe repo analyze [REPO_PATH] [--output PATH] [--no-save]
+
+      Walk a local repository, parse its source code with Tree-sitter,
+      build a dependency graph, generate semantic file summaries, persist
+      the index as JSON, and print a beautiful architecture summary.
+
+Run with:
 
     python main.py
     # or, once installed:
     ai-swe
+    ai-swe repo analyze .
 """
 
 from __future__ import annotations
@@ -33,9 +41,111 @@ from ai_swe.mcp.factory import build_orchestrator
 from ai_swe.mcp.filesystem_tools import list_repository_files
 from ai_swe.mcp.git_tools import clone_repository
 
-app = typer.Typer(add_completion=False, help="AI SWE Agent -- foundation CLI.")
+app = typer.Typer(add_completion=False, help="AI SWE Agent — foundation CLI.")
 console = Console()
 logger = get_logger(__name__)
+
+# ── Sub-app: repo ────────────────────────────────────────────────────────────
+
+repo_app = typer.Typer(
+    name="repo",
+    help="Repository understanding commands.",
+    add_completion=False,
+)
+app.add_typer(repo_app)
+
+
+# ---------------------------------------------------------------------------
+# repo analyze
+# ---------------------------------------------------------------------------
+
+
+@repo_app.command("analyze")
+def repo_analyze(
+    repo_path: Path = typer.Argument(
+        Path("."),
+        help="Local path to the repository to analyse (default: current directory).",
+        show_default=True,
+    ),
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Destination for the JSON index file. "
+        "Defaults to <REPO_PATH>/.ai_swe_index.json.",
+    ),
+    no_save: bool = typer.Option(
+        False,
+        "--no-save",
+        help="Skip writing the JSON index; only display the architecture summary.",
+    ),
+    concurrency: int = typer.Option(
+        8,
+        "--concurrency",
+        "-c",
+        help="Max files parsed concurrently.",
+    ),
+) -> None:
+    """
+    Analyse a local repository: parse AST symbols, build a dependency graph,
+    generate semantic file summaries, and display a beautiful architecture
+    summary.
+
+    Example:
+
+        ai-swe repo analyze .
+        ai-swe repo analyze /path/to/myproject --output /tmp/index.json
+    """
+    configure_logging()
+
+    # Lazy import so the MCP path is not loaded on every --help
+    from ai_swe.indexer.analyzer import CodebaseAnalyzer
+    from ai_swe.indexer.persistence import save_index
+    from ai_swe.indexer.reporter import print_architecture_summary
+
+    repo_path = repo_path.expanduser().resolve()
+
+    if not repo_path.is_dir():
+        console.print(f"[bold red]Error:[/bold red] {repo_path} is not a directory.")
+        raise typer.Exit(code=1)
+
+    # Determine output path
+    index_path: Path | None = None
+    if not no_save:
+        index_path = (output or repo_path / ".ai_swe_index.json").expanduser().resolve()
+
+    async def _run() -> None:
+        analyzer = CodebaseAnalyzer(
+            repo_path=repo_path,
+            concurrency=concurrency,
+            console=console,
+        )
+        index = await analyzer.analyze_repository()
+
+        # Print architecture summary
+        print_architecture_summary(index, console, output_path=index_path)
+
+        # Persist JSON
+        if index_path is not None:
+            save_index(index, index_path)
+            console.print(
+                f"[bold green]✓[/bold green] Index saved → [cyan]{index_path}[/cyan]"
+            )
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Interrupted.[/yellow]")
+        sys.exit(0)
+    except Exception as exc:
+        logger.exception("repo analyze failed.")
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Original default command (backwards-compatible)
+# ---------------------------------------------------------------------------
 
 
 def _repo_dest_path(workdir: Path, repo_url: str) -> Path:
@@ -45,7 +155,7 @@ def _repo_dest_path(workdir: Path, repo_url: str) -> Path:
     return workdir / (name or "repository")
 
 
-async def _run(repo_url: str) -> None:
+async def _run_clone(repo_url: str) -> None:
     """The actual async workflow: connect -> clone -> list files -> report."""
     settings = get_settings()
     # Resolve to an absolute path up front. Both MCP servers are scoped to an
@@ -110,7 +220,7 @@ def main(
         repo_url = typer.prompt("Enter a GitHub repository URL to clone")
 
     try:
-        asyncio.run(_run(repo_url))
+        asyncio.run(_run_clone(repo_url))
     except Exception as exc:
         logger.exception("Task failed.")
         console.print(f"[bold red]Error:[/bold red] {exc}")
