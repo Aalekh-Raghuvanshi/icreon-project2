@@ -40,12 +40,52 @@ class PlanStep(BaseModel):
     description: str = Field(description="Human-readable description of the work to do.")
     done: bool = Field(default=False, description="Whether this step has been completed.")
 
+    # --- Extended fields (populated by the real Planner agent) ---------------
+    files_involved: list[str] = Field(
+        default_factory=list,
+        description="Relative file paths touched by this step.",
+    )
+    reasoning: str = Field(
+        default="",
+        description="Why this step is necessary.",
+    )
+    dependencies: list[str] = Field(
+        default_factory=list,
+        description="IDs of steps that must complete before this one.",
+    )
+    expected_outcome: str = Field(
+        default="",
+        description="What should be true after this step completes.",
+    )
+    risk_level: str = Field(
+        default="low",
+        description="Risk classification: low / medium / high / critical.",
+    )
+
 
 class Plan(BaseModel):
     """The overall plan for accomplishing the task, made up of ordered steps."""
 
     summary: str | None = Field(default=None, description="One-paragraph summary of the plan.")
     steps: list[PlanStep] = Field(default_factory=list)
+
+    # --- Extended fields (populated by the real Planner agent) ---------------
+    architecture_impact: str = Field(
+        default="",
+        description="How this plan affects the overall codebase architecture.",
+    )
+    testing_strategy: str = Field(
+        default="",
+        description="How to verify the changes.",
+    )
+    files_to_create: list[str] = Field(
+        default_factory=list,
+        description="New files that will be created.",
+    )
+    files_to_modify: list[str] = Field(
+        default_factory=list,
+        description="Existing files that will be modified.",
+    )
 
 
 class FileRecord(BaseModel):

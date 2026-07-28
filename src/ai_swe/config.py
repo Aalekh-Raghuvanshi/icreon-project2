@@ -63,8 +63,8 @@ class Settings(BaseSettings):
     workdir: Path = Path("./workspace")
 
     # --- LLM provider --------------------------------------------------------
-    anthropic_api_key: str | None = None
-    llm_model: str = "claude-sonnet-4-6"
+    groq_api_key: str | None = None
+    llm_model: str = "llama-3.3-70b-versatile"
 
     # --- GitHub --------------------------------------------------------------
     github_personal_access_token: str | None = Field(

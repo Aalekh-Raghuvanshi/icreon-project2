@@ -10,12 +10,19 @@ Available commands:
       Ask for a GitHub repository URL, clone it via MCP servers, list its
       files, and report success.
 
-  Repository understanding command (new):
+  Repository understanding command:
     ai-swe repo analyze [REPO_PATH] [--output PATH] [--no-save]
 
       Walk a local repository, parse its source code with Tree-sitter,
       build a dependency graph, generate semantic file summaries, persist
       the index as JSON, and print a beautiful architecture summary.
+
+  Planning command (new):
+    ai-swe plan "Add rate limiting" [REPO_PATH] [--output PATH] [--no-save]
+
+      Analyse the codebase and produce a structured implementation plan
+      using an LLM (Claude).  Visualises the plan in the terminal and
+      saves it as JSON.
 
 Run with:
 
@@ -23,6 +30,7 @@ Run with:
     # or, once installed:
     ai-swe
     ai-swe repo analyze .
+    ai-swe plan "Add rate limiting" .
 """
 
 from __future__ import annotations
@@ -53,6 +61,92 @@ repo_app = typer.Typer(
     add_completion=False,
 )
 app.add_typer(repo_app)
+
+
+# ── Command: plan ─────────────────────────────────────────────────────────────
+
+
+@app.command("plan")
+def plan_command(
+    task: str = typer.Argument(
+        ...,
+        help="Natural-language description of the task to plan, e.g. 'Add rate limiting'.",
+    ),
+    repo_path: Path = typer.Argument(
+        Path("."),
+        help="Local path to the repository (default: current directory).",
+        show_default=True,
+    ),
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Destination for the plan JSON file. "
+        "Defaults to <REPO_PATH>/.ai_swe_plan.json.",
+    ),
+    no_save: bool = typer.Option(
+        False,
+        "--no-save",
+        help="Skip writing the plan JSON; only display the visualisation.",
+    ),
+) -> None:
+    """
+    Generate an AI-powered implementation plan for a task.
+
+    Analyses the repository, selectively retrieves relevant files, and uses
+    an LLM (Claude) to produce a structured, step-by-step implementation
+    roadmap.
+
+    Examples:
+
+        ai-swe plan "Add rate limiting" .
+        ai-swe plan "Refactor auth module" /path/to/project --output plan.json
+        ai-swe plan "Add unit tests for user service" --no-save
+    """
+    configure_logging()
+
+    # Lazy imports to keep --help fast
+    from ai_swe.agents.plan_persistence import save_plan
+    from ai_swe.agents.plan_visualizer import visualize_plan
+    from ai_swe.agents.planner import generate_plan
+
+    repo_path = repo_path.expanduser().resolve()
+
+    if not repo_path.is_dir():
+        console.print(f"[bold red]Error:[/bold red] {repo_path} is not a directory.")
+        raise typer.Exit(code=1)
+
+    console.print()
+    console.print(
+        f"[bold bright_cyan]🧠 Planning:[/] [white]{task}[/]"
+    )
+    console.print(
+        f"[dim]   Repository: {repo_path}[/]"
+    )
+    console.print()
+
+    async def _run() -> None:
+        plan = await generate_plan(task, repo_path)
+
+        # Visualise
+        visualize_plan(plan, console)
+
+        # Save
+        if not no_save:
+            dest = save_plan(plan, repo_path=repo_path, output_path=output)
+            console.print(
+                f"[bold green]✓[/bold green] Plan saved → [cyan]{dest}[/cyan]"
+            )
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Interrupted.[/yellow]")
+        sys.exit(0)
+    except Exception as exc:
+        logger.exception("Planning failed.")
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
