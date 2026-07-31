@@ -44,7 +44,13 @@ class TestRunCiChecks:
         assert result.passed is True
         assert [c.name for c in result.checks] == ["ruff", "mypy"]
         assert all(isinstance(c, CheckResult) and c.passed for c in result.checks)
-        assert sandbox.commands == [["ruff", "check", "."], ["mypy", "."]]
+        # Auto-fix pass (ruff --fix, ruff format) runs before the gate checks.
+        assert sandbox.commands == [
+            ["ruff", "check", "--fix", "."],
+            ["ruff", "format", "."],
+            ["ruff", "check", "."],
+            ["mypy", "."],
+        ]
 
     @pytest.mark.asyncio
     async def test_lint_failure_fails_the_gate(self, tmp_path: Path) -> None:
@@ -77,7 +83,8 @@ class TestRunCiChecks:
 
         result = await run_ci_checks(sandbox, tmp_path)
 
-        assert len(sandbox.commands) == 2
+        # 2 auto-fix commands + 2 gate checks = 4 total.
+        assert len(sandbox.commands) == 4
         assert result.passed is False
         assert all(not c.passed for c in result.checks)
 
