@@ -34,6 +34,14 @@ DEFAULT_CI_TIMEOUT = 300.0
 # `CheckResult` -- mirrors `execution/test_runner.py`'s `MAX_OUTPUT_CHARS`.
 MAX_OUTPUT_CHARS = 4000
 
+# Auto-fix commands run BEFORE the gate checks, so the agent corrects its own
+# formatting / trivially-fixable lint before it's judged. Any changes these
+# make are picked up by the Publisher's "commit all" and included in the PR.
+_AUTOFIX_COMMANDS: list[tuple[str, list[str]]] = [
+    ("ruff --fix", ["ruff", "check", "--fix", "."]),
+    ("ruff format", ["ruff", "format", "."]),
+]
+
 # The checks the gate runs, in order, as (name, command) pairs.
 _CI_CHECKS: list[tuple[str, list[str]]] = [
     ("ruff", ["ruff", "check", "."]),
@@ -80,6 +88,18 @@ async def run_ci_checks(
     repo_path = Path(repo_path)
     checks: list[CheckResult] = []
 
+    # 1. Auto-fix pass: correct formatting and trivially-fixable lint so the
+    #    agent's own output isn't blocked on cosmetic issues. Failures here are
+    #    non-fatal (e.g. ruff exits non-zero if unfixable issues remain) --
+    #    the real verdict comes from the gate checks below.
+    for name, command in _AUTOFIX_COMMANDS:
+        logger.info("Running CI auto-fix '%s': %s", name, " ".join(command))
+        result = await sandbox.run(command, cwd=repo_path, timeout=timeout)
+        logger.info(
+            "CI auto-fix '%s': %s", name, "applied" if result.success else "no-op/partial"
+        )
+
+    # 2. Gate checks: these decide whether the PR is allowed to open.
     for name, command in _CI_CHECKS:
         logger.info("Running CI check '%s': %s", name, " ".join(command))
         result = await sandbox.run(command, cwd=repo_path, timeout=timeout)
