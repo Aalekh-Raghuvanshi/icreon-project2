@@ -159,8 +159,11 @@ class TestPrompts:
 
 class TestCoderRetry:
     @pytest.mark.asyncio
-    async def test_retry_on_invalid_then_valid(self):
+    async def test_retry_on_invalid_then_valid(self, tmp_path):
         from ai_swe.agents.coder import CoderAgent
+        from ai_swe.agents.edit_engine import EditEngine
+
+        (tmp_path / "util.py").write_text("x = 1\n", encoding="utf-8")
 
         valid_json = json.dumps(_make_valid_changeset_dict())
         mock_llm = AsyncMock()
@@ -173,23 +176,75 @@ class TestCoderRetry:
 
         agent = CoderAgent(orchestrator=None, llm=mock_llm)
         step = PlanStep(id="step-1", description="Add greet()", files_involved=["util.py"])
-        changeset = await agent._code_step_with_retry(step, "summary", "FILE: util.py\nx = 1")
+        engine = EditEngine(tmp_path, orchestrator=None)
+        changeset, patches = await agent._code_step_with_retry(
+            step, "summary", "FILE: util.py\nx = 1", engine
+        )
 
         assert changeset.step_id == "step-1"
+        assert len(patches) == 1
         assert mock_llm.ainvoke.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_exhausted_retries_raises(self):
+    async def test_exhausted_retries_raises(self, tmp_path):
         from ai_swe.agents.coder import CoderAgent
+        from ai_swe.agents.edit_engine import EditEngine
 
         mock_llm = AsyncMock()
         mock_llm.ainvoke = AsyncMock(return_value=MagicMock(content="not json"))
 
         agent = CoderAgent(orchestrator=None, llm=mock_llm)
         step = PlanStep(id="step-1", description="Add greet()")
+        engine = EditEngine(tmp_path, orchestrator=None)
 
-        with pytest.raises(ValueError, match="Failed to produce a valid change set"):
-            await agent._code_step_with_retry(step, "summary", "")
+        with pytest.raises(ValueError, match="Failed to code and apply step"):
+            await agent._code_step_with_retry(step, "summary", "", engine)
+
+    @pytest.mark.asyncio
+    async def test_retry_on_syntax_error_then_valid(self, tmp_path):
+        """
+        The LLM's first response parses fine but produces syntactically
+        broken Python; EditEngine's syntax verification should reject it
+        without failing the whole step -- the Coder retries with the error
+        fed back and succeeds on the second, valid response.
+        """
+        from ai_swe.agents.coder import CoderAgent
+        from ai_swe.agents.edit_engine import EditEngine
+
+        (tmp_path / "util.py").write_text("x = 1\n", encoding="utf-8")
+
+        broken_changeset = {
+            "step_id": "step-1",
+            "rationale": "Deliberately broken edit for testing retry.",
+            "edits": [
+                {
+                    "file_path": "util.py",
+                    "action": "modify",
+                    "new_content": "def f(:\n    pass\n",
+                    "description": "Broken syntax.",
+                }
+            ],
+        }
+        valid_json = json.dumps(_make_valid_changeset_dict())
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(
+            side_effect=[
+                MagicMock(content=json.dumps(broken_changeset)),
+                MagicMock(content=valid_json),
+            ]
+        )
+
+        agent = CoderAgent(orchestrator=None, llm=mock_llm)
+        step = PlanStep(id="step-1", description="Add greet()", files_involved=["util.py"])
+        engine = EditEngine(tmp_path, orchestrator=None)
+        changeset, patches = await agent._code_step_with_retry(
+            step, "summary", "FILE: util.py\nx = 1", engine
+        )
+
+        assert changeset.step_id == "step-1"
+        assert len(patches) == 1
+        assert mock_llm.ainvoke.call_count == 2
+        assert "def greet():" in (tmp_path / "util.py").read_text(encoding="utf-8")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -254,6 +309,65 @@ class TestCoderRun:
 
         assert result.status == TaskStatus.EXECUTING
         mock_llm.ainvoke.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_recovers_from_syntax_error_on_retry(self, tmp_path):
+        """
+        End-to-end: the first LLM response is valid JSON but produces a
+        syntactically broken file; the run() pipeline should retry (not
+        fail), and succeed once the second response is valid.
+        """
+        from ai_swe.agents.coder import CoderAgent
+
+        (tmp_path / "util.py").write_text("x = 1\n", encoding="utf-8")
+
+        broken_changeset = {
+            "step_id": "step-1",
+            "rationale": "Deliberately broken edit for testing retry.",
+            "edits": [
+                {
+                    "file_path": "util.py",
+                    "action": "modify",
+                    "new_content": "def f(:\n    pass\n",
+                    "description": "Broken syntax.",
+                }
+            ],
+        }
+        valid_changeset = _make_valid_changeset_dict()
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(
+            side_effect=[
+                MagicMock(content=json.dumps(broken_changeset)),
+                MagicMock(content=json.dumps(valid_changeset)),
+            ]
+        )
+
+        agent = CoderAgent(orchestrator=None, llm=mock_llm)
+        state = AgentState(
+            task="Add a greet() helper to util.py",
+            repo_path=str(tmp_path),
+            plan=Plan(
+                summary="Add a greet() helper",
+                steps=[
+                    PlanStep(
+                        id="step-1",
+                        description="Add greet() to util.py",
+                        files_involved=["util.py"],
+                    )
+                ],
+            ),
+        )
+
+        result = await agent.run(state)
+
+        assert result.status == TaskStatus.EXECUTING
+        assert result.error is None
+        assert result.plan.steps[0].done is True
+        assert len(result.patches) == 1
+        assert mock_llm.ainvoke.call_count == 2
+
+        new_content = (tmp_path / "util.py").read_text(encoding="utf-8")
+        assert "def greet():" in new_content
 
     @pytest.mark.asyncio
     async def test_run_marks_failed_and_leaves_files_untouched_on_broken_edit(self, tmp_path):

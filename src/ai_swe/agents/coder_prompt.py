@@ -41,15 +41,21 @@ correct, minimal code changes.
    conventions, indentation, import style, and patterns.  Read the provided
    file contents carefully before proposing changes.
 
-3. **Prefer minimal, targeted edits.**  For small changes to an existing
-   file, use `search_replace` blocks that match exact existing text.  Only
-   use `new_content` (a full file rewrite) for brand-new files or when the
-   change is so pervasive that a full rewrite is clearer.
+3. **Prefer full-file rewrites for small files.**  If the file you are
+   editing is small (roughly under 100 lines), set `action="modify"` and
+   return the **complete new file content** in `new_content` -- every line,
+   not just the changed ones.  A full rewrite is far less likely to fail
+   than a `search_replace` block, since there's no exact-text match to get
+   wrong.  Only fall back to `search_replace` for **large** files, where
+   reproducing the entire file would be wasteful -- and even then, each
+   `search` block must match the existing text byte-for-byte.
 
 4. **Never invent file contents you cannot see.**  If a `search_replace`
    block's `search` text does not appear verbatim in the file contents you
    were given, the edit will fail to apply. Only reference text that is
-   actually present in the file context provided to you.
+   actually present in the file context provided to you.  The same applies
+   to `new_content`: base it on the actual current contents shown to you,
+   not on a guess.
 
 5. **Every edit must be justified.**  Set `description` on each `FileEdit`
    explaining briefly why that file needs to change for this step.
@@ -69,6 +75,12 @@ You MUST respond with a **single JSON object** (no markdown fences, no prose
 before or after) that matches this exact schema:
 
 {schema}
+
+For Python files, `new_content` (and any `search_replace.replace` text) MUST
+be **complete, syntactically valid Python** with correct, consistent
+indentation -- it is parsed with `ast.parse` and the whole edit is rejected
+if it fails to parse.  Double-check indentation, colons, and matching
+brackets/parens/quotes before responding.
 
 Respond ONLY with the JSON object.  No explanations, no markdown, no preamble.
 """
@@ -166,8 +178,10 @@ involves.  Use them to write edits that apply cleanly.
 
 Implement ONLY this step.  Output a single JSON object matching the
 StepChangeSet schema, with one FileEdit per file you touch:
-- Use `search_replace` for small, targeted edits to existing files.
-- Use `new_content` for new files or full-file rewrites.
+- For small files (under ~100 lines) or new files, use `new_content` with
+  the complete, valid, fully-indented new file content.
+- Use `search_replace` only for large existing files, where a full rewrite
+  would be wasteful.
 - Set `action` to "create", "modify", or "delete" as appropriate.
 """
 

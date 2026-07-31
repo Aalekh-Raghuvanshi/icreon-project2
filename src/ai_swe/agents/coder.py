@@ -14,8 +14,10 @@ This mirrors the Planner agent's pattern exactly:
 * **Prompt engineering** -- a senior-engineer persona instructed to change
   only what the step requires (see ``coder_prompt.py``).
 * **Retry handling** -- up to ``MAX_RETRIES`` attempts if the LLM returns
-  invalid JSON or the change set fails Pydantic validation, each retry
-  including the previous error so the LLM can self-correct.
+  invalid JSON, the change set fails Pydantic validation, *or* the edits
+  fail to apply (e.g. ``SyntaxVerificationError`` from ``EditEngine``).
+  Each retry feeds the previous error back into the prompt so the LLM can
+  self-correct -- a syntax mistake fails the attempt, not the whole run.
 * **Safe application** -- edits are applied (and, on any failure, rolled
   back) by ``EditEngine``, which also verifies the resulting file syntax.
 
@@ -45,7 +47,7 @@ from ai_swe.agents.retrieval import FileRetriever
 from ai_swe.config import get_settings
 from ai_swe.indexer.models import RepositoryIndex
 from ai_swe.logging_config import get_logger
-from ai_swe.state import AgentState, ErrorReport, PlanStep, TaskStatus
+from ai_swe.state import AgentState, ErrorReport, Patch, PlanStep, TaskStatus
 
 logger = get_logger(__name__)
 
@@ -144,16 +146,22 @@ class CoderAgent(BaseAgent):
         step: PlanStep,
         plan_summary: str | None,
         file_contents: str,
+        engine: EditEngine,
         errors: list[ErrorReport] | None = None,
-    ) -> StepChangeSet:
+    ) -> tuple[StepChangeSet, list[Patch]]:
         """
-        Call the LLM and parse the response, retrying on validation failure.
+        Call the LLM, parse the response, and apply the resulting edits,
+        retrying the whole cycle on failure.
 
-        Up to ``MAX_RETRIES`` attempts.  Each retry includes the previous
-        error in the prompt so the LLM can self-correct. ``errors`` (from a
-        prior Reviewer fix-loop pass) are injected into every attempt's
-        prompt so the LLM fixes the actual failure instead of redoing the
-        step from scratch.
+        Up to ``MAX_RETRIES`` attempts.  A failure at *either* stage --
+        invalid JSON / a Pydantic validation error from ``validate_changeset``,
+        or an application error (``EditApplyError``, ``SyntaxVerificationError``,
+        etc.) raised by ``engine.apply_changeset`` -- consumes one attempt.
+        Each retry includes the previous error in the prompt so the LLM can
+        self-correct instead of failing the whole run over a single bad edit.
+        ``errors`` (from a prior Reviewer fix-loop pass) are injected into
+        every attempt's prompt so the LLM fixes the actual failure instead of
+        redoing the step from scratch.
         """
         system_prompt = build_system_prompt()
         user_prompt = build_coding_prompt(step, plan_summary, file_contents, errors=errors)
@@ -181,14 +189,16 @@ class CoderAgent(BaseAgent):
                     attempt,
                     len(changeset.edits),
                 )
-                return changeset
 
-            except (ValueError, Exception) as exc:
+                patches = await engine.apply_changeset(changeset.edits)
+                return changeset, patches
+
+            except Exception as exc:
                 last_error = str(exc)
                 logger.warning("Attempt %d failed: %s", attempt, last_error[:300])
                 if attempt == MAX_RETRIES:
                     raise ValueError(
-                        f"Failed to produce a valid change set for step {step.id} after "
+                        f"Failed to code and apply step {step.id} after "
                         f"{MAX_RETRIES} attempts.  Last error: {last_error}"
                     ) from exc
 
@@ -206,12 +216,13 @@ class CoderAgent(BaseAgent):
         For each not-yet-done step in ``state.plan.steps``, in order:
 
         1. Retrieve the current contents of the step's ``files_involved``.
-        2. Call the LLM with retry to get a validated ``StepChangeSet``,
-           injecting any ``state.errors`` from a prior Reviewer fix-loop
-           pass that are relevant to this step.
-        3. Apply the change set via ``EditEngine`` (backed up and rolled
-           back atomically on failure).
-        4. Append the resulting ``Patch`` objects to ``state.patches`` and
+        2. Call the LLM to get a validated ``StepChangeSet`` and apply it via
+           ``EditEngine`` (backed up and rolled back atomically on failure),
+           retrying the full cycle -- including edit application and syntax
+           verification -- up to ``MAX_RETRIES`` times, injecting any
+           ``state.errors`` from a prior Reviewer fix-loop pass that are
+           relevant to this step.
+        3. Append the resulting ``Patch`` objects to ``state.patches`` and
            mark the step ``done``.
 
         On success, advances ``state.status`` to ``EXECUTING`` (so the
@@ -247,11 +258,10 @@ class CoderAgent(BaseAgent):
                 )
                 relevant_errors = self._errors_for_step(step, state.errors)
 
-                changeset = await self._code_step_with_retry(
-                    step, state.plan.summary, file_contents, errors=relevant_errors
+                changeset, patches = await self._code_step_with_retry(
+                    step, state.plan.summary, file_contents, engine, errors=relevant_errors
                 )
 
-                patches = await engine.apply_changeset(changeset.edits)
                 for patch in patches:
                     if patch.description is None:
                         patch.description = changeset.rationale
