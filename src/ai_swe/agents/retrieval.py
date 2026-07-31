@@ -29,7 +29,7 @@ import logging
 import re
 from pathlib import Path
 
-from ai_swe.indexer.models import FileSummary, RepositoryIndex
+from ai_swe.indexer.models import RepositoryIndex
 
 logger = logging.getLogger(__name__)
 
@@ -325,15 +325,7 @@ class FileRetriever:
 
 # Words to ignore when tokenizing a query
 _STOP_WORDS = frozenset(
-    "a an the is are was were be been being have has had do does did "
-    "will would shall should may might must can could "
-    "and or but not no nor so for yet both either neither "
-    "in on at to from by with of as into through during "
-    "i we you he she it they me him her us them my our your his its their "
-    "this that these those what which who whom whose when where why how "
-    "all each every some any few more most other such "
-    "add create implement build make update modify change fix remove delete "
-    "new".split()
+    ["a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "shall", "should", "may", "might", "must", "can", "could", "and", "or", "but", "not", "no", "nor", "so", "for", "yet", "both", "either", "neither", "in", "on", "at", "to", "from", "by", "with", "of", "as", "into", "through", "during", "i", "we", "you", "he", "she", "it", "they", "me", "him", "her", "us", "them", "my", "our", "your", "his", "its", "their", "this", "that", "these", "those", "what", "which", "who", "whom", "whose", "when", "where", "why", "how", "all", "each", "every", "some", "any", "few", "more", "most", "other", "such", "add", "create", "implement", "build", "make", "update", "modify", "change", "fix", "remove", "delete", "new"]
 )
 
 

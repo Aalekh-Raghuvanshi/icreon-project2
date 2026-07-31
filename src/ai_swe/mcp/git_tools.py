@@ -87,3 +87,88 @@ async def git_status(orchestrator: MCPOrchestrator, repo_path: str) -> str:
     """Return the `git status` output for the repository at `repo_path`."""
     result = await orchestrator.call(GIT_SERVER, "git_status", {"path": repo_path})
     return str(result)
+
+
+class BranchResult(BaseModel):
+    """Structured result of a `create_branch` call."""
+
+    success: bool
+    branch: str
+    output: str | None = None
+
+
+async def create_branch(orchestrator: MCPOrchestrator, repo_path: str, branch: str) -> BranchResult:
+    """
+    Create and switch to a new branch via the Git MCP server's `git_checkout`
+    tool (`createBranch: true` -- equivalent to `git checkout -b <branch>`).
+    """
+    logger.info("Creating branch '%s' in '%s'...", branch, repo_path)
+    raw_result = await orchestrator.call(
+        GIT_SERVER,
+        "git_checkout",
+        {"path": repo_path, "target": branch, "createBranch": True},
+    )
+
+    success = bool(raw_result.get("success", True)) if isinstance(raw_result, dict) else True
+    result = BranchResult(success=success, branch=branch, output=str(raw_result))
+    logger.info("Branch creation finished: success=%s branch=%s", result.success, result.branch)
+    return result
+
+
+class CommitResult(BaseModel):
+    """Structured result of a `commit_all` call."""
+
+    success: bool
+    commit_hash: str | None = None
+    output: str | None = None
+
+
+async def commit_all(orchestrator: MCPOrchestrator, repo_path: str, message: str) -> CommitResult:
+    """
+    Stage every change in the working tree and commit it, via the Git MCP
+    server's `git_add` (all paths) followed by `git_commit`.
+    """
+    logger.info("Staging all changes in '%s'...", repo_path)
+    await orchestrator.call(GIT_SERVER, "git_add", {"path": repo_path, "paths": ["."]})
+
+    logger.info("Committing changes in '%s'...", repo_path)
+    raw_result = await orchestrator.call(
+        GIT_SERVER, "git_commit", {"path": repo_path, "message": message}
+    )
+
+    if isinstance(raw_result, dict):
+        success = bool(raw_result.get("success", True))
+        commit_hash = raw_result.get("commitHash")
+    else:
+        success = True
+        commit_hash = None
+
+    result = CommitResult(success=success, commit_hash=commit_hash, output=str(raw_result))
+    logger.info("Commit finished: success=%s commit=%s", result.success, result.commit_hash)
+    return result
+
+
+class PushResult(BaseModel):
+    """Structured result of a `push_branch` call."""
+
+    success: bool
+    output: str | None = None
+
+
+async def push_branch(orchestrator: MCPOrchestrator, repo_path: str, branch: str) -> PushResult:
+    """
+    Push `branch` to its remote (`origin`) via the Git MCP server's
+    `git_push` tool, setting up upstream tracking (equivalent to
+    `git push -u origin <branch>`).
+    """
+    logger.info("Pushing branch '%s' from '%s'...", branch, repo_path)
+    raw_result = await orchestrator.call(
+        GIT_SERVER,
+        "git_push",
+        {"path": repo_path, "branch": branch, "setUpstream": True},
+    )
+
+    success = bool(raw_result.get("success", True)) if isinstance(raw_result, dict) else True
+    result = PushResult(success=success, output=str(raw_result))
+    logger.info("Push finished: success=%s branch=%s", result.success, branch)
+    return result

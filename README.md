@@ -3,9 +3,10 @@
 An AI Software Engineer, orchestrated over the **Model Context Protocol
 (MCP)**, built with **LangGraph**, **LangChain**, **FastAPI**, and **Pydantic**.
 
-> **Status: foundation milestone.** This repository currently implements
-> project scaffolding, MCP connectivity, shared state, and a multi-agent
-> routing skeleton -- it does **not** yet plan tasks or write code. See
+> **Status: Day 7.** Planner, Coder, Executor, Reviewer, and Publisher are
+> all implemented -- the agent can plan a task, write patches, run the test
+> suite in a sandbox, auto-fix failures, gate on lint/type-check, and open a
+> pull request. See
 > [What's implemented](#whats-implemented-vs-whats-a-placeholder) below.
 
 ---
@@ -33,8 +34,16 @@ An AI Software Engineer, orchestrated over the **Model Context Protocol
                  │      Agent orchestrator (LangGraph)    │
                  │        (orchestrator/graph.py)         │
                  │                                         │
-                 │  Planner -> Coder -> Reviewer -> Executor │
+                 │  Planner -> Coder -> Executor -> Reviewer │
+                 │  (loops Reviewer -> Coder on failure)     │
                  │  routed via shared `AgentState`          │
+                 └───────────────────┬───────────────────┘
+                                     │ state.status == DONE, opt-in (--open-pr)
+                                     ▼
+                 ┌───────────────────────────────────────┐
+                 │        Publisher (agents/publisher.py) │
+                 │  CI gate (ruff + mypy) -> branch ->     │
+                 │  commit -> push -> open pull request     │
                  └───────────────────────────────────────┘
 ```
 
@@ -45,8 +54,13 @@ confusion:
   MCP *servers* (Git, GitHub, Filesystem) and exposes a uniform
   `call(server, tool, arguments)` interface.
 * **The agent graph** (`src/ai_swe/orchestrator/graph.py`) is a LangGraph
-  `StateGraph` that routes a task between *agents* (Planner, Coder, Reviewer,
-  Executor), using the `MCPOrchestrator` as a shared dependency.
+  `StateGraph` that routes a task between *agents* (Planner, Coder, Executor,
+  Reviewer), using the `MCPOrchestrator` as a shared dependency.
+
+The Publisher is deliberately **not** a node in that graph -- opening a pull
+request is a significant, externally-visible side effect, so it only runs
+when a caller explicitly opts in (`ai-swe run --open-pr`), after the graph
+has already reached `DONE`.
 
 ## Tech stack
 
@@ -77,23 +91,33 @@ ai-swe-agent/
 │   ├── mcp/
 │   │   ├── client.py             # MCPConnection + MCPOrchestrator
 │   │   ├── factory.py            # builds an orchestrator from Settings
-│   │   ├── git_tools.py          # clone_repository(), git_status()
+│   │   ├── git_tools.py          # clone_repository(), git_status(), create_branch(),
+│   │   │                         # commit_all(), push_branch()
 │   │   ├── filesystem_tools.py   # list_repository_files()
-│   │   └── github_tools.py       # search_repositories(), get_file_contents()
+│   │   └── github_tools.py       # search_repositories(), get_file_contents(),
+│   │                              # open_pull_request(), build_pr_body()
+│   ├── execution/
+│   │   ├── sandbox.py             # Docker/local command sandbox
+│   │   ├── test_runner.py         # test-framework auto-detection + execution
+│   │   └── ci.py                  # CI gate: run_ci_checks() (ruff + mypy)
 │   ├── agents/
 │   │   ├── base.py               # BaseAgent interface
-│   │   ├── planner.py            # Planner agent (placeholder)
-│   │   ├── coder.py               # Coder agent (placeholder)
-│   │   ├── reviewer.py            # Reviewer agent (placeholder)
-│   │   └── executor.py            # Execution agent (placeholder)
+│   │   ├── planner.py            # Planner agent (LLM-driven implementation plan)
+│   │   ├── coder.py               # Coder agent (LLM-driven patch generation)
+│   │   ├── executor.py            # Execution agent (runs tests in a Sandbox)
+│   │   ├── reviewer.py            # Reviewer agent (triages failures, auto-fix loop)
+│   │   └── publisher.py           # Publisher agent (CI gate -> branch -> commit ->
+│   │                              # push -> open PR; opt-in, not in the graph)
 │   ├── orchestrator/
 │   │   └── graph.py               # LangGraph routing between agents
 │   └── cli/
-│       └── main.py                # Typer CLI: prompt -> clone -> list -> report
+│       └── main.py                # Typer CLI: run / plan / repo analyze / clone
 └── tests/
     ├── test_state.py
     ├── test_filesystem_tools.py
-    └── test_orchestrator_graph.py
+    ├── test_orchestrator_graph.py
+    ├── test_ci.py
+    └── test_publisher.py
 ```
 
 ## Setup
@@ -145,6 +169,35 @@ This will:
    server's `directory_tree` tool.
 4. Print a success summary.
 
+#### `ai-swe run` -- the full pipeline
+
+```bash
+ai-swe run "Add input validation to the signup form" /path/to/repo
+```
+
+Runs the complete agent pipeline (Planner -> Coder -> Executor -> Reviewer,
+with the Reviewer able to loop back to the Coder for bounded auto-fix
+attempts) against an already-checked-out local repository, and renders the
+live agent log and test results with `rich` as it goes.
+
+To also open a pull request once the pipeline reaches `DONE`, add `--open-pr`
+and `--repo-url` (needed so the Publisher knows which GitHub repo to open the
+PR against):
+
+```bash
+ai-swe run "Add input validation to the signup form" /path/to/repo \
+  --open-pr --repo-url https://github.com/me/myrepo --base-branch main
+```
+
+With `--open-pr`, a successful run is followed by:
+1. A CI gate (`ruff check .` and `mypy .`, run inside a `Sandbox`) -- if
+   either check fails, the Publisher stops here, records the failure on
+   `state.ci_result` / `state.error`, and does **not** open a PR.
+2. A feature branch, committing every working-tree change, and pushing it.
+3. A pull request, with an auto-generated body built from the plan summary,
+   the files changed (`state.patches`), and the test results
+   (`state.test_results`).
+
 ### 5. Run tests
 
 ```bash
@@ -162,8 +215,8 @@ docker compose run --rm ai-swe-agent
 
 | Server       | Package                                        | Notes |
 |--------------|--------------------------------------------------|-------|
-| Git          | `@cyanheads/git-mcp-server` (npm)                 | The *official* `mcp-server-git` (from `modelcontextprotocol/servers`) deliberately has **no clone tool** -- it only operates on an existing checkout. This community server exposes `git_clone` alongside 27 other git operations, which is what `clone_repository()` calls. |
-| GitHub       | `@modelcontextprotocol/server-github` (npm)        | Wraps the GitHub REST API; requires `GITHUB_PERSONAL_ACCESS_TOKEN`. |
+| Git          | `@cyanheads/git-mcp-server` (npm)                 | The *official* `mcp-server-git` (from `modelcontextprotocol/servers`) deliberately has **no clone tool** -- it only operates on an existing checkout. This community server exposes `git_clone` alongside 27 other git operations. `clone_repository()` calls `git_clone`; `create_branch()` calls `git_checkout` (`createBranch: true`); `commit_all()` calls `git_add` + `git_commit`; `push_branch()` calls `git_push` (`setUpstream: true`). |
+| GitHub       | `@modelcontextprotocol/server-github` (npm)        | Wraps the GitHub REST API; requires `GITHUB_PERSONAL_ACCESS_TOKEN`. `open_pull_request()` calls its `create_pull_request` tool. |
 | Filesystem   | `@modelcontextprotocol/server-filesystem` (npm)    | Sandboxed to a single allowed directory (the agent's `WORKDIR`); `list_repository_files()` uses its `directory_tree` tool. |
 
 All three are launched over **stdio** (as subprocesses), the standard local
@@ -183,22 +236,30 @@ its build sandbox; a normal developer machine or CI runner should not need it.
 
 ## What's implemented vs. what's a placeholder
 
-**Implemented and live-verified today:**
+**Implemented (Day 1-7):**
 - Connecting to all three MCP servers and listing their tools.
 - `clone_repository()` -- verified by actually cloning a public GitHub repo.
 - `list_repository_files()` -- verified against the cloned repo's real file tree.
 - The shared `AgentState` Pydantic model and its (de)serialization.
-- The LangGraph agent routing graph -- verified to route a task through
-  Planner -> Coder -> Reviewer -> Executor to completion.
+- The LangGraph agent routing graph, Planner -> Coder -> Executor -> Reviewer,
+  with the Reviewer looping back to the Coder for bounded auto-fix attempts.
+- **Planner** -- LLM-driven implementation planning (`agents/planner.py`).
+- **Coder** -- LLM-driven patch generation via `EditEngine` (`agents/coder.py`).
+- **Executor** -- auto-detects and runs the project's test suite in a
+  `Sandbox` (Docker, falling back to a local subprocess) (`agents/executor.py`).
+- **Reviewer** -- triages failing test output into structured `ErrorReport`s
+  and drives the Coder auto-fix loop (`agents/reviewer.py`).
+- **Publisher** -- runs a CI gate (`ruff check` + `mypy`, `execution/ci.py`)
+  and, if it passes, creates a branch, commits, pushes, and opens a pull
+  request with an auto-generated body (`agents/publisher.py`). Opt-in via
+  `ai-swe run --open-pr`; not part of the default graph.
 
 **Deliberately NOT implemented yet** (next milestones):
-- Real planning (Planner currently just advances `state.status`).
-- Real code generation / patch creation (Coder is a placeholder).
-- Real patch review (Reviewer is a placeholder).
-- Real patch application / test execution (Executor is a placeholder).
-
-Each placeholder agent lives in its own file under `src/ai_swe/agents/` with
-a docstring describing exactly what it will do once implemented.
+- A documentation-lookup MCP tool the Coder can call when unsure of a
+  library's API (no readily-available docs MCP server was wired up for Day
+  7; the Coder still relies on repository context + its own knowledge).
+- A FastAPI HTTP surface (FastAPI is a dependency, reserved for a future
+  milestone; today's interface is the CLI).
 
 ## Configuration reference
 

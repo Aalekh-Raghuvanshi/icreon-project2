@@ -35,16 +35,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import networkx as nx
-from rich.columns import Columns
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
-from rich.text import Text
-from rich import box
 
-from ai_swe.indexer.models import Language, RepositoryIndex, RepositoryStatistics
+from ai_swe.indexer.models import Language, RepositoryIndex
 
 # ---------------------------------------------------------------------------
 # Language colour palette
@@ -121,9 +118,11 @@ def print_architecture_summary(
         f"[bold]Repo:[/bold]       [bright_cyan]{index.repo_name}[/bright_cyan]",
         f"[bold]Path:[/bold]       [dim]{index.repo_path}[/dim]",
         f"[bold]Total files:[/bold] [green]{stats.total_files:,}[/green]",
-        f"[bold]Total LOC:[/bold]   [green]{stats.total_loc:,}[/green] "
-        f"[dim]({stats.total_lines:,} raw lines)[/dim]",
-        f"[bold]Languages:[/bold]  "
+        (
+            f"[bold]Total LOC:[/bold]   [green]{stats.total_loc:,}[/green] "
+            f"[dim]({stats.total_lines:,} raw lines)[/dim]"
+        ),
+        "[bold]Languages:[/bold]  "
         + ", ".join(
             f"[{_LANG_COLOURS.get(l, 'white')}]{_LANG_ICONS.get(l, '')} {l}[/]"
             for l in stats.language_breakdown

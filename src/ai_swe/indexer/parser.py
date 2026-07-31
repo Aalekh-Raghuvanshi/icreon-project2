@@ -32,9 +32,8 @@ Usage::
 from __future__ import annotations
 
 import logging
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
-from typing import Any
 
 from tree_sitter import Language as TSLanguage
 from tree_sitter import Node, Parser
@@ -48,28 +47,28 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-@lru_cache(maxsize=None)
+@cache
 def _get_ts_language(lang: Language) -> TSLanguage | None:
     """Return a cached tree-sitter Language object, or None if unavailable."""
     try:
         if lang == Language.PYTHON:
-            import tree_sitter_python as m
-            return TSLanguage(m.language())
+            import tree_sitter_python as m_python
+            return TSLanguage(m_python.language())
         elif lang == Language.JAVASCRIPT:
-            import tree_sitter_javascript as m
-            return TSLanguage(m.language())
+            import tree_sitter_javascript as m_javascript
+            return TSLanguage(m_javascript.language())
         elif lang == Language.TYPESCRIPT:
-            import tree_sitter_typescript as m  # type: ignore[import]
-            return TSLanguage(m.language_typescript())
+            import tree_sitter_typescript as m_typescript
+            return TSLanguage(m_typescript.language_typescript())
         elif lang == Language.JAVA:
-            import tree_sitter_java as m
-            return TSLanguage(m.language())
+            import tree_sitter_java as m_java
+            return TSLanguage(m_java.language())
         elif lang == Language.GO:
-            import tree_sitter_go as m
-            return TSLanguage(m.language())
+            import tree_sitter_go as m_go
+            return TSLanguage(m_go.language())
         elif lang == Language.CPP:
-            import tree_sitter_cpp as m
-            return TSLanguage(m.language())
+            import tree_sitter_cpp as m_cpp
+            return TSLanguage(m_cpp.language())
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not load tree-sitter grammar for %s: %s", lang, exc)
     return None

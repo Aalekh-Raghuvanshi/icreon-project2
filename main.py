@@ -15,7 +15,7 @@ from pathlib import Path
 # Allow running directly from a source checkout without `pip install -e .`.
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from ai_swe.cli.main import app  # noqa: E402  (import after sys.path tweak, intentionally)
+from ai_swe.cli.main import app
 
 if __name__ == "__main__":
     app()

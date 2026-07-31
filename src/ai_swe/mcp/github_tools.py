@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from ai_swe.logging_config import get_logger
 from ai_swe.mcp.client import MCPOrchestrator
 from ai_swe.mcp.factory import GITHUB_SERVER
+from ai_swe.state import AgentState
 
 logger = get_logger(__name__)
 
@@ -63,3 +64,93 @@ async def get_file_contents(
         arguments["branch"] = branch
     result = await orchestrator.call(GITHUB_SERVER, "get_file_contents", arguments)
     return str(result)
+
+
+class PullRequestResult(BaseModel):
+    """Structured result of an `open_pull_request` call."""
+
+    success: bool
+    url: str | None = None
+    number: int | None = None
+
+
+async def open_pull_request(
+    orchestrator: MCPOrchestrator,
+    owner: str,
+    repo: str,
+    head: str,
+    base: str,
+    title: str,
+    body: str,
+) -> PullRequestResult:
+    """
+    Open a pull request via the GitHub MCP server's `create_pull_request` tool.
+
+    Args:
+        owner: Repository owner (user or organization).
+        repo: Repository name.
+        head: Branch containing the changes (the Publisher's feature branch).
+        base: Branch the changes should be merged into (e.g. `main`).
+        title: Pull request title.
+        body: Pull request description (see `build_pr_body`).
+    """
+    logger.info("Opening pull request %s/%s: '%s' -> '%s' (%s)...", owner, repo, head, base, title)
+    raw_result = await orchestrator.call(
+        GITHUB_SERVER,
+        "create_pull_request",
+        {"owner": owner, "repo": repo, "title": title, "head": head, "base": base, "body": body},
+    )
+
+    if isinstance(raw_result, dict):
+        url = raw_result.get("html_url")
+        number = raw_result.get("number")
+        success = bool(url or raw_result.get("success", False))
+    else:
+        url = None
+        number = None
+        success = False
+
+    result = PullRequestResult(success=success, url=url, number=number)
+    logger.info("Pull request opened: success=%s url=%s", result.success, result.url)
+    return result
+
+
+def build_pr_body(state: AgentState) -> str:
+    """
+    Auto-generate a pull request description from `state`: the plan summary,
+    the list of files changed (`state.patches`), and the test results
+    (`state.test_results`).
+    """
+    lines: list[str] = ["## Summary", "", state.plan.summary or state.task, ""]
+
+    lines.append("## Files changed")
+    if state.patches:
+        for patch in state.patches:
+            entry = f"- `{patch.file_path}`"
+            if patch.description:
+                entry += f" — {patch.description}"
+            lines.append(entry)
+    else:
+        lines.append("_No files recorded._")
+    lines.append("")
+
+    lines.append("## Test results")
+    if state.test_results:
+        for test in state.test_results:
+            status = "✅ PASSED" if test.passed else "❌ FAILED"
+            lines.append(f"- **{test.name}**: {status}")
+    else:
+        lines.append("_No test results recorded._")
+
+    if state.ci_result is not None:
+        lines.append("")
+        lines.append("## CI checks")
+        for check in state.ci_result.checks:
+            status = "✅ PASSED" if check.passed else "❌ FAILED"
+            lines.append(f"- **{check.name}**: {status}")
+
+    lines.append("")
+    lines.append("---")
+    lines.append("_Opened automatically by the AI SWE Agent's Publisher._")
+
+    return "\n".join(lines)

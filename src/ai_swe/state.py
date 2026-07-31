@@ -21,6 +21,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from ai_swe.execution.ci import CIResult
+
 
 class TaskStatus(str, Enum):
     """High-level lifecycle status of a task moving through the agent pipeline."""
@@ -176,6 +178,18 @@ class AgentState(BaseModel):
     errors: list[ErrorReport] = Field(
         default_factory=list,
         description="Structured errors produced by the Reviewer from the latest failing test run.",
+    )
+
+    # --- Publisher (CI gate + PR) -----------------------------------------------
+    ci_result: CIResult | None = Field(
+        default=None,
+        description="Result of the post-DONE CI gate (lint/type-check), set by the Publisher.",
+    )
+    branch_name: str | None = Field(
+        default=None, description="Feature branch created by the Publisher, if any."
+    )
+    pr_url: str | None = Field(
+        default=None, description="URL of the pull request opened by the Publisher, if any."
     )
 
     def add_log(self, agent: str, message: str, level: str = "info") -> AgentState:

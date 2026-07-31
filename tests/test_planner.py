@@ -13,25 +13,23 @@ Covers:
 from __future__ import annotations
 
 import json
-import textwrap
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import ValidationError
 
+from ai_swe.agents.plan_persistence import load_plan, save_plan
 from ai_swe.agents.planner_models import (
     ImplementationPlan,
-    PlanStepDetail,
     RiskLevel,
     validate_plan,
 )
-from ai_swe.agents.retrieval import FileRetriever, _tokenize
-from ai_swe.agents.plan_persistence import save_plan, load_plan
 from ai_swe.agents.planner_prompt import (
     build_planning_prompt,
     build_retry_prompt,
     build_system_prompt,
 )
+from ai_swe.agents.retrieval import FileRetriever, _tokenize
 from ai_swe.indexer.models import (
     FileSummary,
     Language,
@@ -40,7 +38,6 @@ from ai_swe.indexer.models import (
     Symbol,
     SymbolKind,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════
 # Fixtures
@@ -205,37 +202,37 @@ class TestImplementationPlanValidation:
     def test_sequential_step_numbers_required(self):
         data = _make_valid_plan_dict()
         data["steps"][1]["step_number"] = 5  # gap
-        with pytest.raises(Exception):  # ValidationError
+        with pytest.raises(ValidationError):
             ImplementationPlan.model_validate(data)
 
     def test_dependency_on_future_step_rejected(self):
         data = _make_valid_plan_dict()
         data["steps"][0]["dependencies"] = [2]  # step 1 depends on step 2
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ImplementationPlan.model_validate(data)
 
     def test_dependency_on_self_rejected(self):
         data = _make_valid_plan_dict()
         data["steps"][1]["dependencies"] = [2]  # step 2 depends on itself
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ImplementationPlan.model_validate(data)
 
     def test_dependency_on_nonexistent_step_rejected(self):
         data = _make_valid_plan_dict()
         data["steps"][0]["dependencies"] = [99]
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ImplementationPlan.model_validate(data)
 
     def test_empty_steps_rejected(self):
         data = _make_valid_plan_dict()
         data["steps"] = []
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ImplementationPlan.model_validate(data)
 
     def test_missing_task_rejected(self):
         data = _make_valid_plan_dict()
         data["task"] = ""
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ImplementationPlan.model_validate(data)
 
     def test_files_involved_auto_added_to_modify(self):
@@ -257,7 +254,7 @@ class TestImplementationPlanValidation:
     def test_invalid_risk_level_rejected(self):
         data = _make_valid_plan_dict()
         data["steps"][0]["risk_level"] = "extreme"
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ImplementationPlan.model_validate(data)
 
 
@@ -289,7 +286,7 @@ class TestValidatePlan:
             validate_plan("{bad json}")
 
     def test_valid_json_invalid_schema_raises(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             validate_plan('{"task": ""}')  # empty task
 
 
@@ -481,6 +478,7 @@ class TestPlanVisualizer:
 
     def test_visualize_does_not_crash(self):
         from io import StringIO
+
         from rich.console import Console
 
         from ai_swe.agents.plan_visualizer import visualize_plan

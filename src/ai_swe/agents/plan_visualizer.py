@@ -19,7 +19,6 @@ Sections rendered
 from __future__ import annotations
 
 from rich.console import Console
-from rich.columns import Columns
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -194,7 +193,7 @@ def visualize_plan(
             risk_content.append_text(part)
             risk_content.append("\n")
 
-        risk_content.append(f"\nEstimated complexity: ", style="dim")
+        risk_content.append("\nEstimated complexity: ", style="dim")
         risk_content.append(plan.estimated_complexity.upper(), style="bold")
 
         console.print(

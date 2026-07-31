@@ -8,10 +8,8 @@ Everything is JSON-serialisable via ``model.model_dump_json()``.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
 
 from pydantic import BaseModel, Field
-
 
 # ---------------------------------------------------------------------------
 # Enumerations

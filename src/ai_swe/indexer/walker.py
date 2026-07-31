@@ -17,8 +17,8 @@ Usage::
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 # ---------------------------------------------------------------------------
 # Directories to skip entirely (matched against each directory *name*, not
@@ -114,9 +114,7 @@ def _should_skip_dir(dir_name: str) -> bool:
     if dir_name in IGNORED_DIR_NAMES:
         return True
     # Handle glob-style patterns like "*.egg-info"
-    if dir_name.endswith(".egg-info"):
-        return True
-    return False
+    return dir_name.endswith(".egg-info")
 
 
 def walk_repository(root: Path, max_file_size_bytes: int = 1_000_000) -> Iterator[Path]:

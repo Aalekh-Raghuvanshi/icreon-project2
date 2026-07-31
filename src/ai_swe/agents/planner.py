@@ -110,10 +110,11 @@ class PlannerAgent(BaseAgent):
             )
 
         from langchain_groq import ChatGroq
+        from pydantic import SecretStr
 
         self._llm = ChatGroq(
             model=model,
-            api_key=api_key,
+            api_key=SecretStr(api_key),
             max_tokens=8192,
             temperature=0.0,  # deterministic planning
         )
@@ -178,7 +179,8 @@ class PlannerAgent(BaseAgent):
         ]
 
         response = await llm.ainvoke(messages)
-        return response.content
+        content = response.content
+        return content if isinstance(content, str) else str(content)
 
     async def _plan_with_retry(
         self,
@@ -328,7 +330,7 @@ class PlannerAgent(BaseAgent):
             )
 
         except Exception as exc:
-            logger.exception("[planner] Planning failed: %s", exc)
+            logger.exception("[planner] Planning failed")
             state.status = TaskStatus.FAILED
             state.error = f"Planning failed: {exc}"
             state.add_log(self.name, f"Planning failed: {exc}", level="error")
