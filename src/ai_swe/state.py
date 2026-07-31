@@ -2,8 +2,9 @@
 Shared state definitions for the AI SWE Agent.
 
 `AgentState` is the single object passed between every node of the LangGraph
-orchestrator (Planner -> Coder -> Reviewer -> Executor). Every agent reads
-what it needs from the state and returns an updated copy, so the whole
+orchestrator (Planner -> Coder -> Executor -> Reviewer, with the Reviewer
+able to loop back to the Coder for bounded auto-fix retries). Every agent
+reads what it needs from the state and returns an updated copy, so the whole
 pipeline is transparent and replayable -- at any point we can serialize
 `AgentState` to JSON and inspect exactly what has happened so far.
 
@@ -112,6 +113,23 @@ class TestResult(BaseModel):
     output: str | None = Field(default=None, description="Captured stdout/stderr, truncated.")
 
 
+class ErrorReport(BaseModel):
+    """A single structured error extracted from a failing test run by the Reviewer."""
+
+    file_path: str | None = Field(
+        default=None, description="File the error originates from, if known."
+    )
+    line: int | None = Field(
+        default=None, description="Line number the error originates from, if known."
+    )
+    error_type: str = Field(description="Kind of error, e.g. AssertionError, ImportError.")
+    message: str = Field(description="Human-readable error message.")
+    traceback_excerpt: str = Field(description="Relevant excerpt of the traceback/log output.")
+    suggested_fix: str = Field(
+        default="", description="A minimal suggested fix, if the reviewer identified one."
+    )
+
+
 class LogEntry(BaseModel):
     """A single structured log line recorded by an agent during task execution."""
 
@@ -147,6 +165,18 @@ class AgentState(BaseModel):
 
     # --- Failure tracking ------------------------------------------------------
     error: str | None = Field(default=None, description="Set when `status` is FAILED.")
+
+    # --- Auto-fix loop (Reviewer <-> Coder) -------------------------------------
+    fix_attempts: int = Field(
+        default=0, description="Number of Reviewer-triggered fix attempts made so far."
+    )
+    max_fix_attempts: int = Field(
+        default=3, description="Maximum number of Reviewer-triggered fix attempts allowed."
+    )
+    errors: list[ErrorReport] = Field(
+        default_factory=list,
+        description="Structured errors produced by the Reviewer from the latest failing test run.",
+    )
 
     def add_log(self, agent: str, message: str, level: str = "info") -> AgentState:
         """Append a log entry and return `self` (for convenient chaining)."""

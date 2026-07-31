@@ -11,6 +11,14 @@ llm=mock_llm)`) isn't available here. Instead we monkeypatch each agent's
 `_call_llm` -- the same seam, one level lower -- to return canned,
 schema-valid JSON. This keeps the test fully offline and deterministic: no
 GROQ_API_KEY, no network access, no dependency on real LLM output.
+
+The Executor and Reviewer are exercised for real (not stubbed): the tmp_path
+repo has no test-framework marker files (no pyproject.toml, package.json,
+...), so the Executor's `run_tests()` finds nothing to run and hands off to
+the Reviewer with an empty `test_results` -- which the Reviewer treats as
+"no failures", approving the run without ever needing to call its own LLM.
+This exercises the real Planner -> Coder -> Executor -> Reviewer -> DONE
+path end to end.
 """
 
 from __future__ import annotations
@@ -77,8 +85,9 @@ def _stub_llm_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     Replace `PlannerAgent._call_llm` and `CoderAgent._call_llm` with stubs
     that return canned JSON, so the graph never constructs a real `ChatGroq`
-    client or needs `GROQ_API_KEY`. Reviewer and Executor are still
-    placeholder agents (see `agents/base.py`) and make no LLM calls at all.
+    client or needs `GROQ_API_KEY`. The Reviewer only calls its LLM when it
+    sees a failing test, which doesn't happen in this module's tests (see
+    module docstring), so it needs no stub here.
     """
 
     async def fake_planner_call_llm(self: PlannerAgent, system_prompt: str, user_prompt: str) -> str:
@@ -102,7 +111,7 @@ async def test_graph_routes_through_all_agents_to_done(tmp_path) -> None:
     # Planner/Coder each log several entries per run (progress messages), so
     # dedupe by first occurrence to get the order agents actually ran in.
     agents_that_ran = list(dict.fromkeys(entry.agent for entry in result.logs))
-    assert agents_that_ran == ["planner", "coder", "reviewer", "executor"]
+    assert agents_that_ran == ["planner", "coder", "executor", "reviewer"]
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,7 @@ Covers:
   - Coder prompt construction
   - Retry logic with a mock LLM
   - Full CoderAgent.run() against a tiny temp repo (files modified, patches
-    populated, step marked done, status advances to REVIEWING)
+    populated, step marked done, status advances to EXECUTING)
   - A deliberately broken edit fails the run and leaves files untouched
 
 `orchestrator=None` throughout, and the LLM is always a mock -- no MCP
@@ -227,7 +227,7 @@ class TestCoderRun:
 
         result = await agent.run(state)
 
-        assert result.status == TaskStatus.REVIEWING
+        assert result.status == TaskStatus.EXECUTING
         assert result.error is None
         assert result.plan.steps[0].done is True
         assert len(result.patches) == 1
@@ -252,7 +252,7 @@ class TestCoderRun:
 
         result = await agent.run(state)
 
-        assert result.status == TaskStatus.REVIEWING
+        assert result.status == TaskStatus.EXECUTING
         mock_llm.ainvoke.assert_not_called()
 
     @pytest.mark.asyncio

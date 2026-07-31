@@ -1,25 +1,27 @@
 """
 Agent orchestrator: a LangGraph `StateGraph` that routes a task through the
-Planner -> Coder -> Reviewer -> Executor agents.
+Planner -> Coder -> Executor -> Reviewer agents, with the Reviewer able to
+loop back to the Coder for a bounded number of auto-fix attempts.
 
 This is distinct from `ai_swe.mcp.client.MCPOrchestrator` (which manages MCP
 *server* connections). This module is the *agent* orchestrator: it decides
 which agent runs next based on the shared `AgentState`.
 
 Routing is driven entirely by `state.status` (a `TaskStatus`), which each
-agent advances when it finishes its (currently placeholder) work:
+agent advances when it finishes its work:
 
-    PENDING -> [planner] -> CODING -> [coder] -> REVIEWING
-            -> [reviewer] -> EXECUTING -> [executor] -> DONE
+    PENDING -> [planner] -> CODING -> [coder] -> EXECUTING
+            -> [executor] -> REVIEWING -> [reviewer] -> DONE | CODING | FAILED
 
-If any agent sets `state.status = FAILED`, the graph short-circuits straight
-to END regardless of which node just ran -- this is the hook future
-milestones will use for real error handling (e.g. a failing test suite
-should stop the pipeline rather than march on to "done").
+The Reviewer is the only node with a genuinely conditional exit: if it finds
+failing tests and `state.fix_attempts < state.max_fix_attempts`, it loops
+back to CODER (`state.status = CODING`) with `state.errors` populated so the
+Coder can target the actual failure. Otherwise it terminates the run, either
+`DONE` (all tests passed) or `FAILED` (max fix attempts exhausted).
 
-Today, every agent is a placeholder (see `ai_swe/agents/*.py`), so running
-this graph end-to-end simply demonstrates that the routing works; it does
-not perform any real planning or code changes yet.
+If any agent sets `state.status = FAILED` -- including the Executor, for a
+sandbox/infrastructure error rather than a failing test -- the graph
+short-circuits straight to END regardless of which node just ran.
 """
 
 from __future__ import annotations
@@ -39,8 +41,8 @@ from ai_swe.state import AgentState, TaskStatus
 # Node names, used both when registering nodes and when routing between them.
 PLANNER = "planner"
 CODER = "coder"
-REVIEWER = "reviewer"
 EXECUTOR = "executor"
+REVIEWER = "reviewer"
 
 
 def _route_after(
@@ -65,6 +67,21 @@ def _route_after(
     return _route
 
 
+def _route_after_reviewer(state: AgentState) -> str:
+    """
+    Route out of the Reviewer node.
+
+    `CODING` means the Reviewer found failing tests and sent the state back
+    to the Coder for another bounded fix attempt. `DONE` and `FAILED` both
+    terminate the run -- `DONE` because the test suite passed, `FAILED`
+    because `state.max_fix_attempts` was exhausted (or, upstream, because
+    the Executor hit a sandbox/infrastructure error).
+    """
+    if state.status == TaskStatus.CODING:
+        return CODER
+    return END
+
+
 def build_agent_graph(orchestrator: MCPOrchestrator) -> CompiledStateGraph[AgentState]:
     """
     Build and compile the multi-agent routing graph.
@@ -78,26 +95,28 @@ def build_agent_graph(orchestrator: MCPOrchestrator) -> CompiledStateGraph[Agent
     """
     planner = PlannerAgent(orchestrator)
     coder = CoderAgent(orchestrator)
-    reviewer = ReviewerAgent(orchestrator)
     executor = ExecutionAgent(orchestrator)
+    reviewer = ReviewerAgent(orchestrator)
 
     builder = StateGraph(AgentState)
     builder.add_node(PLANNER, planner.run)
     builder.add_node(CODER, coder.run)
-    builder.add_node(REVIEWER, reviewer.run)
     builder.add_node(EXECUTOR, executor.run)
+    builder.add_node(REVIEWER, reviewer.run)
 
     builder.set_entry_point(PLANNER)
     builder.add_conditional_edges(
         PLANNER, _route_after(TaskStatus.CODING, CODER), {CODER: CODER, END: END}
     )
     builder.add_conditional_edges(
-        CODER, _route_after(TaskStatus.REVIEWING, REVIEWER), {REVIEWER: REVIEWER, END: END}
+        CODER, _route_after(TaskStatus.EXECUTING, EXECUTOR), {EXECUTOR: EXECUTOR, END: END}
     )
     builder.add_conditional_edges(
-        REVIEWER, _route_after(TaskStatus.EXECUTING, EXECUTOR), {EXECUTOR: EXECUTOR, END: END}
+        EXECUTOR, _route_after(TaskStatus.REVIEWING, REVIEWER), {REVIEWER: REVIEWER, END: END}
     )
-    builder.add_edge(EXECUTOR, END)
+    builder.add_conditional_edges(
+        REVIEWER, _route_after_reviewer, {CODER: CODER, END: END}
+    )
 
     return builder.compile()
 
@@ -111,5 +130,5 @@ async def run_task(orchestrator: MCPOrchestrator, state: AgentState) -> AgentSta
     callers a properly typed object.
     """
     graph = build_agent_graph(orchestrator)
-    result = await graph.ainvoke(state)
+    result = await graph.ainvoke(state, config={"recursion_limit": 100})
     return AgentState.model_validate(result)

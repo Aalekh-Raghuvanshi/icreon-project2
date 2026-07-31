@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 
 from ai_swe.agents.coder_models import StepChangeSet
-from ai_swe.state import PlanStep
+from ai_swe.state import ErrorReport, PlanStep
 
 # ---------------------------------------------------------------------------
 # System prompt — "You are a senior software engineer"
@@ -90,10 +90,38 @@ def build_system_prompt() -> str:
 # ---------------------------------------------------------------------------
 
 
+def _format_errors_section(errors: list[ErrorReport] | None) -> str:
+    """Render prior fix-loop errors as a prompt section, or "" if there are none."""
+    if not errors:
+        return ""
+
+    entries = []
+    for e in errors:
+        loc = f"{e.file_path or '?'}:{e.line if e.line is not None else '?'}"
+        entries.append(
+            f"- [{e.error_type}] {loc}: {e.message}\n"
+            f"  Traceback: {e.traceback_excerpt}\n"
+            f"  Suggested fix: {e.suggested_fix or '(none provided)'}"
+        )
+
+    return f"""
+
+## Previous Attempt Failed -- Fix These Errors
+
+The last implementation of this step caused the test suite to fail with the
+errors below.  Do NOT redo the whole step from scratch -- make the minimal
+change needed to fix these specific errors while keeping the rest of the
+step's work intact.
+
+{chr(10).join(entries)}
+"""
+
+
 def build_coding_prompt(
     step: PlanStep,
     plan_summary: str | None,
     file_contents: str,
+    errors: list[ErrorReport] | None = None,
 ) -> str:
     """
     Construct the full user prompt for the Coder LLM call.
@@ -102,6 +130,8 @@ def build_coding_prompt(
         step:          The plan step to implement.
         plan_summary:  One-paragraph summary of the overall plan, for context.
         file_contents: Formatted contents of the step's `files_involved`.
+        errors:        Structured errors from a previous fix-loop attempt at
+                        this step (see `reviewer.py`), if this is a retry.
 
     Returns:
         The assembled user prompt string.
@@ -131,7 +161,7 @@ The following are the current, on-disk contents of the files this step
 involves.  Use them to write edits that apply cleanly.
 
 {file_contents or "(no existing files retrieved -- these are likely new files)"}
-
+{_format_errors_section(errors)}
 ## Your Job
 
 Implement ONLY this step.  Output a single JSON object matching the

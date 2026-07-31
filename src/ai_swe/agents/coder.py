@@ -45,7 +45,7 @@ from ai_swe.agents.retrieval import FileRetriever
 from ai_swe.config import get_settings
 from ai_swe.indexer.models import RepositoryIndex
 from ai_swe.logging_config import get_logger
-from ai_swe.state import AgentState, PlanStep, TaskStatus
+from ai_swe.state import AgentState, ErrorReport, PlanStep, TaskStatus
 
 logger = get_logger(__name__)
 
@@ -125,20 +125,38 @@ class CoderAgent(BaseAgent):
     # Core coding logic
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _errors_for_step(step: PlanStep, errors: list[ErrorReport]) -> list[ErrorReport]:
+        """
+        Narrow ``errors`` (from a prior Reviewer fix-loop pass) down to the
+        ones relevant to ``step``, matching on file path overlap with
+        ``step.files_involved``. Falls back to the full list when no error
+        can be localised to this step, so the Coder still sees the failure
+        context even if the match is imprecise.
+        """
+        if not errors:
+            return []
+        matched = [e for e in errors if e.file_path and e.file_path in step.files_involved]
+        return matched if matched else list(errors)
+
     async def _code_step_with_retry(
         self,
         step: PlanStep,
         plan_summary: str | None,
         file_contents: str,
+        errors: list[ErrorReport] | None = None,
     ) -> StepChangeSet:
         """
         Call the LLM and parse the response, retrying on validation failure.
 
         Up to ``MAX_RETRIES`` attempts.  Each retry includes the previous
-        error in the prompt so the LLM can self-correct.
+        error in the prompt so the LLM can self-correct. ``errors`` (from a
+        prior Reviewer fix-loop pass) are injected into every attempt's
+        prompt so the LLM fixes the actual failure instead of redoing the
+        step from scratch.
         """
         system_prompt = build_system_prompt()
-        user_prompt = build_coding_prompt(step, plan_summary, file_contents)
+        user_prompt = build_coding_prompt(step, plan_summary, file_contents, errors=errors)
 
         last_error: str | None = None
 
@@ -188,14 +206,18 @@ class CoderAgent(BaseAgent):
         For each not-yet-done step in ``state.plan.steps``, in order:
 
         1. Retrieve the current contents of the step's ``files_involved``.
-        2. Call the LLM with retry to get a validated ``StepChangeSet``.
+        2. Call the LLM with retry to get a validated ``StepChangeSet``,
+           injecting any ``state.errors`` from a prior Reviewer fix-loop
+           pass that are relevant to this step.
         3. Apply the change set via ``EditEngine`` (backed up and rolled
            back atomically on failure).
         4. Append the resulting ``Patch`` objects to ``state.patches`` and
            mark the step ``done``.
 
-        On success, advances ``state.status`` to ``REVIEWING``. On any
-        failure, sets ``state.status = FAILED`` and records ``state.error``.
+        On success, advances ``state.status`` to ``EXECUTING`` (so the
+        Executor re-verifies the change) and clears ``state.errors``, since
+        they've now been addressed pending re-verification. On any failure,
+        sets ``state.status = FAILED`` and records ``state.error``.
         """
         logger.info("[coder] Starting coding for task: %s", state.task[:100])
         state.add_log(self.name, f"Coding task: {state.task[:100]}")
@@ -223,9 +245,10 @@ class CoderAgent(BaseAgent):
                     if step.files_involved
                     else ""
                 )
+                relevant_errors = self._errors_for_step(step, state.errors)
 
                 changeset = await self._code_step_with_retry(
-                    step, state.plan.summary, file_contents
+                    step, state.plan.summary, file_contents, errors=relevant_errors
                 )
 
                 patches = await engine.apply_changeset(changeset.edits)
@@ -242,7 +265,8 @@ class CoderAgent(BaseAgent):
                     f"({changeset.rationale[:100]})",
                 )
 
-            state.status = TaskStatus.REVIEWING
+            state.errors = []
+            state.status = TaskStatus.EXECUTING
             state.add_log(
                 self.name,
                 f"Coding complete: {steps_done} step(s) implemented, "

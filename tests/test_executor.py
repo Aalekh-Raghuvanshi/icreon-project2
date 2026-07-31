@@ -28,7 +28,7 @@ class FakeSandbox(Sandbox):
 
 class TestExecutionAgent:
     @pytest.mark.asyncio
-    async def test_no_test_framework_completes_as_done(self, tmp_path):
+    async def test_no_test_framework_hands_off_to_reviewer(self, tmp_path):
         agent = ExecutionAgent(
             orchestrator=None,
             sandbox=FakeSandbox(CommandResult(exit_code=0, stdout="", stderr="", duration=0.0)),
@@ -37,12 +37,13 @@ class TestExecutionAgent:
 
         result = await agent.run(state)
 
-        assert result.status == TaskStatus.DONE
+        assert result.status == TaskStatus.REVIEWING
         assert result.test_results == []
+        assert result.error is None
         assert any("no recognised test framework" in log.message.lower() for log in result.logs)
 
     @pytest.mark.asyncio
-    async def test_passing_suite_completes_as_done(self, tmp_path):
+    async def test_passing_suite_hands_off_to_reviewer(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
         agent = ExecutionAgent(
             orchestrator=None,
@@ -54,13 +55,13 @@ class TestExecutionAgent:
 
         result = await agent.run(state)
 
-        assert result.status == TaskStatus.DONE
+        assert result.status == TaskStatus.REVIEWING
         assert len(result.test_results) == 1
         assert result.test_results[0].passed is True
         assert result.error is None
 
     @pytest.mark.asyncio
-    async def test_failing_suite_sets_failed_status_and_error(self, tmp_path):
+    async def test_failing_suite_hands_off_to_reviewer_without_error(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
         agent = ExecutionAgent(
             orchestrator=None,
@@ -72,10 +73,12 @@ class TestExecutionAgent:
 
         result = await agent.run(state)
 
-        assert result.status == TaskStatus.FAILED
+        # Failing tests are a recoverable part of the auto-fix loop, not an
+        # infrastructure error -- REVIEWING (not FAILED), and `error` is left
+        # unset since it's reserved for a terminal FAILED status.
+        assert result.status == TaskStatus.REVIEWING
         assert result.test_results[0].passed is False
-        assert result.error is not None
-        assert "1 test run(s) failed" in result.error
+        assert result.error is None
 
     @pytest.mark.asyncio
     async def test_sandbox_error_sets_failed_status(self, tmp_path):
@@ -106,5 +109,5 @@ class TestExecutionAgent:
 
         # No pyproject.toml/etc in the real cwd during tests (repo root has
         # pyproject.toml, actually -- so just assert it doesn't raise and
-        # reaches a terminal status).
-        assert result.status in (TaskStatus.DONE, TaskStatus.FAILED)
+        # reaches a terminal-or-handoff status).
+        assert result.status in (TaskStatus.REVIEWING, TaskStatus.FAILED)
