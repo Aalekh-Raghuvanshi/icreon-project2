@@ -513,3 +513,50 @@ def main(
 
 if __name__ == "__main__":
     app()
+
+
+# ---------------------------------------------------------------------------
+# serve (FastAPI + uvicorn)
+# ---------------------------------------------------------------------------
+
+
+@app.command("serve")
+def serve_command(
+    host: str = typer.Option(None, "--host", "-H", help="Host to bind (default: from settings)."),
+    port: int = typer.Option(None, "--port", "-p", help="Port to bind (default: from settings)."),
+    reload: bool = typer.Option(False, "--reload", help="Enable uvicorn auto-reload (dev mode)."),
+    log_level: str = typer.Option("info", "--log-level", help="Uvicorn log level."),
+) -> None:
+    """
+    Start the FastAPI + WebSocket API server.
+
+    The server exposes REST endpoints under /api and a WebSocket endpoint
+    at /ws/{session_id} for real-time agent event streaming.
+
+    Examples:
+        ai-swe serve
+        ai-swe serve --port 9000 --reload
+    """
+    import uvicorn  # type: ignore[import]
+
+    configure_logging()
+    settings = get_settings()
+
+    resolved_host = host or settings.api_host
+    resolved_port = port or settings.api_port
+
+    console.print(
+        f"[bold bright_cyan]🚀 Starting API server[/] at "
+        f"[bold white]http://{resolved_host}:{resolved_port}[/]"
+    )
+    console.print(f"   [dim]Docs → http://{resolved_host}:{resolved_port}/api/docs[/]")
+    console.print()
+
+    uvicorn.run(
+        "ai_swe.api.app:app",
+        host=resolved_host,
+        port=resolved_port,
+        reload=reload,
+        log_level=log_level,
+    )
+

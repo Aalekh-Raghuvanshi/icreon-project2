@@ -1,272 +1,384 @@
 # AI SWE Agent
 
-An AI Software Engineer, orchestrated over the **Model Context Protocol
-(MCP)**, built with **LangGraph**, **LangChain**, **FastAPI**, and **Pydantic**.
+> **A production-ready AI Software Engineer** that plans, generates code, runs tests, auto-fixes failures, and opens pull requests — orchestrated through the **Model Context Protocol (MCP)** with a **full-stack web UI**.
 
-> **Status: Day 7.** Planner, Coder, Executor, Reviewer, and Publisher are
-> all implemented -- the agent can plan a task, write patches, run the test
-> suite in a sandbox, auto-fix failures, gate on lint/type-check, and open a
-> pull request. See
-> [What's implemented](#whats-implemented-vs-whats-a-placeholder) below.
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green.svg)](https://fastapi.tiangolo.com)
+[![React](https://img.shields.io/badge/React-19-61dafb.svg)](https://react.dev)
+[![LangGraph](https://img.shields.io/badge/LangGraph-0.2-purple.svg)](https://langchain-ai.github.io/langgraph/)
+
+---
+
+## Overview
+
+AI SWE Agent is a **multi-agent software engineering system** similar to GitHub Copilot Workspace, Devin, or OpenHands.  Given a natural-language task and a repository, it autonomously:
+
+1. **Analyses** the codebase (AST parsing, dependency graph, semantic summaries)
+2. **Plans** a step-by-step implementation strategy using an LLM
+3. **Generates** code patches via the `EditEngine`
+4. **Executes** the test suite in a sandboxed environment (Docker or local subprocess)
+5. **Reviews** failures, extracts structured error reports, and loops back to fix them
+6. **Gates** with CI (ruff + mypy) before touching GitHub
+7. **Opens** a pull request with an auto-generated body
+
+The entire workflow is **visualised in real time** through a modern React web interface connected via REST and WebSocket.
+
+---
+
+## Features
+
+| Category | Feature |
+|---|---|
+| **Agents** | Planner, Coder, Executor, Reviewer, Publisher |
+| **Orchestration** | LangGraph state graph with conditional routing and auto-fix loop |
+| **MCP Integration** | Git, GitHub, Filesystem MCP servers |
+| **Production Guardrails** | Timeouts, rate limiting, cost limits, large-repo guards, retry with exponential backoff |
+| **Structured Logging** | Per-session JSONL interaction logs, queryable via API |
+| **REST API** | Full CRUD for sessions, repo operations, diffs, test results, PRs |
+| **WebSocket** | Real-time pipeline event streaming (progress, agent status, logs) |
+| **Web UI** | 8-page React/TypeScript/Tailwind/shadcn/React Flow SPA |
+| **React Flow** | Animated multi-agent workflow visualizer |
+| **Code Diff** | Git-style diff viewer with line-level highlighting |
+| **Cost Tracking** | Groq token usage + USD cost estimate (live in dashboard) |
 
 ---
 
 ## Architecture
 
 ```
-                         ┌─────────────────────────┐
-                         │      CLI (main.py)      │
-                         └────────────┬────────────┘
-                                      │
-                                      ▼
-                         ┌─────────────────────────┐
-                         │      MCPOrchestrator     │  connects to every MCP
-                         │   (mcp/client.py)        │  server, exposes call()
-                         └────────────┬────────────┘
-                     ┌────────────────┼────────────────┐
-                     ▼                ▼                ▼
-              ┌────────────┐  ┌─────────────┐  ┌───────────────┐
-              │  Git MCP   │  │ GitHub MCP  │  │ Filesystem MCP │
-              │  server    │  │  server     │  │    server      │
-              └────────────┘  └─────────────┘  └───────────────┘
-
-                 ┌───────────────────────────────────────┐
-                 │      Agent orchestrator (LangGraph)    │
-                 │        (orchestrator/graph.py)         │
-                 │                                         │
-                 │  Planner -> Coder -> Executor -> Reviewer │
-                 │  (loops Reviewer -> Coder on failure)     │
-                 │  routed via shared `AgentState`          │
-                 └───────────────────┬───────────────────┘
-                                     │ state.status == DONE, opt-in (--open-pr)
-                                     ▼
-                 ┌───────────────────────────────────────┐
-                 │        Publisher (agents/publisher.py) │
-                 │  CI gate (ruff + mypy) -> branch ->     │
-                 │  commit -> push -> open pull request     │
-                 └───────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│              Browser (React SPA – port 5173)             │
+│                                                           │
+│  Dashboard  Repository  Task  Workflow  Diff  Tests  PR  │
+│              Logs & Reasoning                             │
+└────────────────────┬────────────────────────────────────┘
+                     │  REST (HTTP/JSON)  │  WebSocket
+                     ▼                   ▼
+┌─────────────────────────────────────────────────────────┐
+│          FastAPI Server  (port 8000)                     │
+│                                                           │
+│  /api/sessions  /api/repo  /api/health  /ws/{session}   │
+│                                                           │
+│  SessionStore  EventBus  BackgroundTasks                 │
+└──────────────────────┬──────────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────────┐
+│         LangGraph Agent Pipeline                         │
+│                                                           │
+│  PENDING → [Planner] → CODING → [Coder] → EXECUTING    │
+│          → [Executor] → REVIEWING → [Reviewer]          │
+│          → DONE | CODING (retry) | FAILED               │
+│                                                           │
+│  On DONE + --open-pr:                                    │
+│  → [Publisher] → CI gate → branch → commit → PR         │
+└────────────────────┬────────────────────────────────────┘
+                     │  stdio (subprocess)
+         ┌───────────┼───────────────┐
+         ▼           ▼               ▼
+    ┌─────────┐ ┌──────────┐ ┌────────────────┐
+    │ Git MCP │ │GitHub MCP│ │ Filesystem MCP │
+    │ server  │ │  server  │ │    server      │
+    └─────────┘ └──────────┘ └────────────────┘
+    (npx @cyanheads/ (npx @modelcontextprotocol/
+     git-mcp-server)  server-github + server-filesystem)
 ```
 
-Two distinct "orchestrators" exist on purpose, and are named to avoid
-confusion:
+---
 
-* **`MCPOrchestrator`** (`src/ai_swe/mcp/client.py`) manages connections to
-  MCP *servers* (Git, GitHub, Filesystem) and exposes a uniform
-  `call(server, tool, arguments)` interface.
-* **The agent graph** (`src/ai_swe/orchestrator/graph.py`) is a LangGraph
-  `StateGraph` that routes a task between *agents* (Planner, Coder, Executor,
-  Reviewer), using the `MCPOrchestrator` as a shared dependency.
-
-The Publisher is deliberately **not** a node in that graph -- opening a pull
-request is a significant, externally-visible side effect, so it only runs
-when a caller explicitly opts in (`ai-swe run --open-pr`), after the graph
-has already reached `DONE`.
-
-## Tech stack
-
-| Concern                | Choice                                            |
-|-------------------------|----------------------------------------------------|
-| Language                | Python 3.12                                        |
-| Web framework            | FastAPI (reserved for a future HTTP API)            |
-| Agent orchestration      | LangGraph + LangChain                               |
-| Data validation          | Pydantic v2 / pydantic-settings                     |
-| Protocol                | Model Context Protocol (`mcp` Python SDK)            |
-| Local git operations     | GitPython (available; MCP is used for all agent-driven git ops) |
-| Dependency management    | `uv`                                                |
-| Containerization         | Docker + docker-compose                             |
-
-## Project layout
+## Project Layout
 
 ```
 ai-swe-agent/
-├── main.py                       # `python main.py` entry point shim
-├── pyproject.toml                # dependencies, tool config
-├── uv.lock                       # locked dependency versions
-├── .env.example                  # documented configuration template
+├── main.py                        # Entry-point shim
+├── pyproject.toml                 # Dependencies, tool config
 ├── Dockerfile / docker-compose.yml
+│
 ├── src/ai_swe/
-│   ├── config.py                 # Settings (pydantic-settings)
-│   ├── logging_config.py         # logging setup (console + JSON)
-│   ├── state.py                  # shared AgentState + related Pydantic models
+│   ├── config.py                  # Settings (pydantic-settings) + guardrail config
+│   ├── state.py                   # AgentState + all Pydantic models
+│   ├── guardrails.py              # NEW: Timeouts, rate limiting, cost tracking, retry
+│   ├── logging_config.py          # Console + JSON + StructuredInteractionLogger
+│   │
+│   ├── api/                       # NEW: FastAPI layer
+│   │   ├── app.py                 # Application factory
+│   │   ├── routes.py              # REST endpoints
+│   │   ├── ws.py                  # WebSocket endpoint + EventBus
+│   │   ├── models.py              # API Pydantic models
+│   │   └── session_store.py       # In-memory + disk session store
+│   │
+│   ├── agents/
+│   │   ├── planner.py             # LLM-driven implementation planning
+│   │   ├── coder.py               # LLM-driven patch generation
+│   │   ├── executor.py            # Test suite runner (Sandbox)
+│   │   ├── reviewer.py            # Failure triage + auto-fix loop
+│   │   └── publisher.py           # CI gate → branch → commit → PR
+│   │
 │   ├── mcp/
-│   │   ├── client.py             # MCPConnection + MCPOrchestrator
-│   │   ├── factory.py            # builds an orchestrator from Settings
-│   │   ├── git_tools.py          # clone_repository(), git_status(), create_branch(),
-│   │   │                         # commit_all(), push_branch()
-│   │   ├── filesystem_tools.py   # list_repository_files()
-│   │   └── github_tools.py       # search_repositories(), get_file_contents(),
-│   │                              # open_pull_request(), build_pr_body()
+│   │   ├── client.py              # MCPOrchestrator
+│   │   ├── factory.py             # Build orchestrator from settings
+│   │   ├── git_tools.py           # clone, status, branch, commit, push
+│   │   ├── filesystem_tools.py    # list_repository_files
+│   │   └── github_tools.py        # search, get_file, open_pull_request
+│   │
 │   ├── execution/
 │   │   ├── sandbox.py             # Docker/local command sandbox
-│   │   ├── test_runner.py         # test-framework auto-detection + execution
-│   │   └── ci.py                  # CI gate: run_ci_checks() (ruff + mypy)
-│   ├── agents/
-│   │   ├── base.py               # BaseAgent interface
-│   │   ├── planner.py            # Planner agent (LLM-driven implementation plan)
-│   │   ├── coder.py               # Coder agent (LLM-driven patch generation)
-│   │   ├── executor.py            # Execution agent (runs tests in a Sandbox)
-│   │   ├── reviewer.py            # Reviewer agent (triages failures, auto-fix loop)
-│   │   └── publisher.py           # Publisher agent (CI gate -> branch -> commit ->
-│   │                              # push -> open PR; opt-in, not in the graph)
+│   │   ├── test_runner.py         # Test framework auto-detection + execution
+│   │   └── ci.py                  # ruff + mypy CI gate
+│   │
 │   ├── orchestrator/
-│   │   └── graph.py               # LangGraph routing between agents
+│   │   └── graph.py               # LangGraph routing graph
+│   │
+│   ├── indexer/                   # Codebase analysis (Tree-sitter + NetworkX)
 │   └── cli/
-│       └── main.py                # Typer CLI: run / plan / repo analyze / clone
-└── tests/
-    ├── test_state.py
-    ├── test_filesystem_tools.py
-    ├── test_orchestrator_graph.py
-    ├── test_ci.py
-    └── test_publisher.py
+│       └── main.py                # Typer CLI: run / plan / repo / serve
+│
+├── frontend/                      # NEW: React + TypeScript + Vite SPA
+│   ├── src/
+│   │   ├── api/
+│   │   │   ├── client.ts          # Typed REST client
+│   │   │   └── ws.ts              # WebSocket client (auto-reconnect)
+│   │   ├── store/
+│   │   │   └── session.ts         # Zustand global state
+│   │   ├── components/
+│   │   │   ├── Layout.tsx         # Sidebar + Outlet
+│   │   │   ├── Sidebar.tsx        # Navigation + active session status
+│   │   │   └── ProgressBar.tsx    # Reusable progress bar
+│   │   └── pages/
+│   │       ├── Dashboard.tsx      # KPIs + session list + run detail
+│   │       ├── Repository.tsx     # Clone + browse + analyze
+│   │       ├── Task.tsx           # Task form + live WS log
+│   │       ├── Workflow.tsx       # React Flow agent visualizer
+│   │       ├── CodeDiff.tsx       # Git-style diff viewer
+│   │       ├── TestResults.tsx    # Test suite results + stack traces
+│   │       ├── PullRequest.tsx    # PR details + CI gate + GitHub link
+│   │       └── Logs.tsx           # Structured interaction log viewer
+│   └── package.json
+│
+└── tests/                         # pytest test suite (174 tests)
 ```
+
+---
 
 ## Setup
 
-### 1. Prerequisites
+### Prerequisites
 
-* Python 3.12+
-* [`uv`](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
-* Node.js 18+ and `npx` (the Git, GitHub, and Filesystem MCP servers used here
-  are npm packages, launched as subprocesses via `npx`)
-* `git`
+- Python 3.12+
+- [`uv`](https://docs.astral.sh/uv/) package manager
+- Node.js 18+ and `npm`
+- `git`
+- Docker (optional — used for sandboxed test execution)
 
-### 2. Install dependencies
+### 1. Install Python dependencies
 
 ```bash
 uv venv .venv
-source .venv/bin/activate
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 uv pip install -e ".[dev]"
 ```
 
-### 3. Configure environment variables
+### 2. Install Frontend dependencies
+
+```bash
+cd frontend
+npm install
+```
+
+### 3. Configure environment
 
 ```bash
 cp .env.example .env
 ```
 
-At minimum, set `GITHUB_PERSONAL_ACCESS_TOKEN` if you want the GitHub MCP
-server to make real API calls (repo search, file contents, etc.) --
-cloning/listing files works even without it.
+Required environment variables:
 
-### 4. Run the CLI
+| Variable | Description |
+|---|---|
+| `GROQ_API_KEY` | Groq API key ([console.groq.com](https://console.groq.com)) |
+| `GITHUB_PERSONAL_ACCESS_TOKEN` | GitHub PAT for PR creation |
+| `LLM_MODEL` | Model name (default: `llama-3.3-70b-versatile`) |
+| `WORKDIR` | Local directory for cloned repos (default: `./workspace`) |
 
-```bash
-python main.py
-# Enter a GitHub repository URL to clone, ...
-```
+Optional guardrail overrides:
 
-or non-interactively:
+| Variable | Default | Description |
+|---|---|---|
+| `AGENT_TIMEOUT_SECONDS` | `300` | Per-agent step timeout |
+| `PIPELINE_TIMEOUT_SECONDS` | `1800` | Whole-pipeline timeout |
+| `MAX_COST_USD` | `5.0` | Max Groq API spend per run |
+| `RATE_LIMIT_RPM` | `30` | LLM requests per minute |
+| `MAX_REPO_SIZE_MB` | `500` | Repo size guard |
+| `MAX_FIX_ATTEMPTS` | `3` | Reviewer → Coder retry loops |
 
-```bash
-python main.py --repo-url https://github.com/octocat/Hello-World.git
-```
+---
 
-This will:
-1. Connect to the Git, GitHub, and Filesystem MCP servers and report how many
-   tools each exposes (a live connectivity check).
-2. Clone the given repository via the Git MCP server's `git_clone` tool.
-3. Recursively list every file/directory in the clone via the Filesystem MCP
-   server's `directory_tree` tool.
-4. Print a success summary.
+## Usage
 
-#### `ai-swe run` -- the full pipeline
-
-```bash
-ai-swe run "Add input validation to the signup form" /path/to/repo
-```
-
-Runs the complete agent pipeline (Planner -> Coder -> Executor -> Reviewer,
-with the Reviewer able to loop back to the Coder for bounded auto-fix
-attempts) against an already-checked-out local repository, and renders the
-live agent log and test results with `rich` as it goes.
-
-To also open a pull request once the pipeline reaches `DONE`, add `--open-pr`
-and `--repo-url` (needed so the Publisher knows which GitHub repo to open the
-PR against):
+### CLI
 
 ```bash
-ai-swe run "Add input validation to the signup form" /path/to/repo \
+# Clone a repository
+python main.py --repo-url https://github.com/fastapi/fastapi
+
+# Analyse codebase
+ai-swe repo analyze /path/to/repo
+
+# Generate an implementation plan
+ai-swe plan "Add rate limiting" /path/to/repo
+
+# Run the full pipeline
+ai-swe run "Add JWT authentication" /path/to/repo
+
+# Run and open a PR on success
+ai-swe run "Add JWT authentication" /path/to/repo \
   --open-pr --repo-url https://github.com/me/myrepo --base-branch main
 ```
 
-With `--open-pr`, a successful run is followed by:
-1. A CI gate (`ruff check .` and `mypy .`, run inside a `Sandbox`) -- if
-   either check fails, the Publisher stops here, records the failure on
-   `state.ci_result` / `state.error`, and does **not** open a PR.
-2. A feature branch, committing every working-tree change, and pushing it.
-3. A pull request, with an auto-generated body built from the plan summary,
-   the files changed (`state.patches`), and the test results
-   (`state.test_results`).
+### Web Interface
 
-### 5. Run tests
+Start both services in separate terminals:
 
 ```bash
-python -m pytest -v
+# Terminal 1: Backend
+ai-swe serve --reload
+
+# Terminal 2: Frontend
+cd frontend && npm run dev
 ```
 
-### 6. Docker
+Then open **http://localhost:5173**.
+
+---
+
+## API Documentation
+
+Interactive API docs are available at **http://localhost:8000/api/docs** when the server is running.
+
+### Key Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/health` | Health check |
+| `GET` | `/api/sessions` | List all pipeline sessions |
+| `POST` | `/api/sessions` | Start a new run (returns session_id; async) |
+| `GET` | `/api/sessions/{id}` | Full session state |
+| `GET` | `/api/sessions/{id}/logs` | Structured interaction logs (JSONL) |
+| `GET` | `/api/sessions/{id}/diff` | Code patches / diffs |
+| `GET` | `/api/sessions/{id}/test-results` | Test results |
+| `GET` | `/api/sessions/{id}/pr` | Pull request metadata |
+| `DELETE` | `/api/sessions/{id}` | Delete session |
+| `POST` | `/api/repo/clone` | Clone a remote repository |
+| `GET` | `/api/repo/tree` | Browse repository file tree |
+| `GET` | `/api/repo/search` | Search files by name |
+| `POST` | `/api/repo/analyze` | Run codebase analysis |
+| `WS` | `/ws/{session_id}` | Real-time pipeline event stream |
+
+### WebSocket Event Types
+
+```json
+{ "event": "progress",       "progress": 0.4, "status": "coding" }
+{ "event": "agent_started",  "agent": "coder", "message": "Generating patches…" }
+{ "event": "agent_finished", "agent": "coder", "status": "executing" }
+{ "event": "log",            "agent": "coder", "message": "Patch applied to auth.py" }
+{ "event": "done",           "status": "done", "data": { "pr_url": "https://…" } }
+{ "event": "error",          "message": "Timeout after 300s" }
+```
+
+---
+
+## MCP Servers
+
+| Server | Package | Role |
+|---|---|---|
+| Git | `@cyanheads/git-mcp-server` | `git_clone`, `git_status`, `git_checkout`, `git_add`, `git_commit`, `git_push` |
+| GitHub | `@modelcontextprotocol/server-github` | `search_repositories`, `get_file_contents`, `create_pull_request` |
+| Filesystem | `@modelcontextprotocol/server-filesystem` | `directory_tree` — sandboxed to the workspace |
+
+All three launch as stdio subprocesses via `npx`.
+
+---
+
+## Production Guardrails
+
+The `ai_swe.guardrails` module provides:
+
+| Guardrail | Implementation |
+|---|---|
+| **Timeouts** | `asyncio.wait_for` wrapping each agent step and the whole pipeline |
+| **Rate Limiting** | Token-bucket limiter (configurable RPM) |
+| **Cost Limiting** | Groq pricing: $0.59/M input, $0.79/M output for `llama-3.3-70b-versatile` |
+| **Large Repo Guard** | Abort if > `MAX_REPO_SIZE_MB`; warn and sample if > `MAX_FILES_IN_REPO` |
+| **Retry** | Exponential backoff with full jitter, up to `MAX_RETRIES` attempts |
+| **Graceful Recovery** | `@graceful_recovery` decorator catches exceptions, logs, returns fallback |
+
+---
+
+## Frontend Design
+
+| Technology | Role |
+|---|---|
+| React 19 + TypeScript | UI framework |
+| Vite 8 | Dev server + bundler |
+| Tailwind CSS v4 | Utility-first styling |
+| CSS custom properties | Dark-mode design tokens |
+| React Router v6 | Client-side routing |
+| Zustand | Lightweight global state |
+| `@xyflow/react` | Multi-agent workflow visualization |
+| `lucide-react` | Icon set |
+
+Design system: dark slate/indigo/violet palette, glassmorphism cards, animated status dots, glowing progress bars, JetBrains Mono for code.
+
+---
+
+## Running Tests
+
+```bash
+# Backend
+python -m pytest -v                  # 174 tests
+
+# Frontend (type check)
+cd frontend && npx tsc -b            # Zero errors
+
+# Frontend (build)
+cd frontend && npm run build
+```
+
+---
+
+## Docker
 
 ```bash
 docker compose build
 docker compose run --rm ai-swe-agent
 ```
 
-## MCP servers used
+---
 
-| Server       | Package                                        | Notes |
-|--------------|--------------------------------------------------|-------|
-| Git          | `@cyanheads/git-mcp-server` (npm)                 | The *official* `mcp-server-git` (from `modelcontextprotocol/servers`) deliberately has **no clone tool** -- it only operates on an existing checkout. This community server exposes `git_clone` alongside 27 other git operations. `clone_repository()` calls `git_clone`; `create_branch()` calls `git_checkout` (`createBranch: true`); `commit_all()` calls `git_add` + `git_commit`; `push_branch()` calls `git_push` (`setUpstream: true`). |
-| GitHub       | `@modelcontextprotocol/server-github` (npm)        | Wraps the GitHub REST API; requires `GITHUB_PERSONAL_ACCESS_TOKEN`. `open_pull_request()` calls its `create_pull_request` tool. |
-| Filesystem   | `@modelcontextprotocol/server-filesystem` (npm)    | Sandboxed to a single allowed directory (the agent's `WORKDIR`); `list_repository_files()` uses its `directory_tree` tool. |
+## Cost Estimation
 
-All three are launched over **stdio** (as subprocesses), the standard local
-transport for MCP. Commands/args are fully configurable via environment
-variables (see `.env.example`) -- e.g. to pin a version, or point at a
-locally built server binary instead of resolving one via `npx` each run.
+Token costs use Groq's public pricing (as of 2025 Q1):
 
-### A note on `npx` in restricted sandboxes
+| Model | Input | Output |
+|---|---|---|
+| `llama-3.3-70b-versatile` | $0.59 / 1M tokens | $0.79 / 1M tokens |
 
-In some sandboxed/CI environments, `npx <package>` can hang because of how it
-proxies stdio through an extra child process. If you hit this, resolve the
-package once (`npx -y <package> --help` or `npm pack`) and point
-`GIT_MCP_COMMAND` / `FILESYSTEM_MCP_COMMAND` / `GITHUB_MCP_COMMAND` directly
-at `node /path/to/resolved/dist/index.js` instead -- see the commented-out
-overrides in `.env.example`. This was necessary to validate this project in
-its build sandbox; a normal developer machine or CI runner should not need it.
+A typical full pipeline run (plan + code + test + review + PR) costs **$0.05–$0.50** depending on repository size and task complexity.
 
-## What's implemented vs. what's a placeholder
+---
 
-**Implemented (Day 1-7):**
-- Connecting to all three MCP servers and listing their tools.
-- `clone_repository()` -- verified by actually cloning a public GitHub repo.
-- `list_repository_files()` -- verified against the cloned repo's real file tree.
-- The shared `AgentState` Pydantic model and its (de)serialization.
-- The LangGraph agent routing graph, Planner -> Coder -> Executor -> Reviewer,
-  with the Reviewer looping back to the Coder for bounded auto-fix attempts.
-- **Planner** -- LLM-driven implementation planning (`agents/planner.py`).
-- **Coder** -- LLM-driven patch generation via `EditEngine` (`agents/coder.py`).
-- **Executor** -- auto-detects and runs the project's test suite in a
-  `Sandbox` (Docker, falling back to a local subprocess) (`agents/executor.py`).
-- **Reviewer** -- triages failing test output into structured `ErrorReport`s
-  and drives the Coder auto-fix loop (`agents/reviewer.py`).
-- **Publisher** -- runs a CI gate (`ruff check` + `mypy`, `execution/ci.py`)
-  and, if it passes, creates a branch, commits, pushes, and opens a pull
-  request with an auto-generated body (`agents/publisher.py`). Opt-in via
-  `ai-swe run --open-pr`; not part of the default graph.
+## Future Improvements
 
-**Deliberately NOT implemented yet** (next milestones):
-- A documentation-lookup MCP tool the Coder can call when unsure of a
-  library's API (no readily-available docs MCP server was wired up for Day
-  7; the Coder still relies on repository context + its own knowledge).
-- A FastAPI HTTP surface (FastAPI is a dependency, reserved for a future
-  milestone; today's interface is the CLI).
+- [ ] **Database backend** — SQLite/Postgres for session persistence instead of JSON files
+- [ ] **Authentication** — JWT-based auth for multi-user deployments
+- [ ] **Streaming LLM output** — Stream tokens to the UI in real time
+- [ ] **Docs MCP tool** — Documentation lookup to improve coder accuracy
+- [ ] **Multi-repo support** — Run agents across multiple repositories simultaneously
+- [ ] **GitHub App** — Trigger runs from PR comments or GitHub Actions
+- [ ] **Plugin architecture** — Custom agent steps via a plugin registry
+- [ ] **Evaluation suite** — Automated benchmarking against SWE-bench
 
-## Configuration reference
-
-See `.env.example` for the full list of environment variables. All
-configuration is read through `ai_swe.config.get_settings()` -- no module
-reads `os.environ` directly, which keeps configuration centralized and easy
-to override in tests.
+---
 
 ## License
 

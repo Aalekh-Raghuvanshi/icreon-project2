@@ -124,6 +124,62 @@ class Settings(BaseSettings):
             env={},
         )
 
+    # --- Production guardrails -----------------------------------------------
+
+    # Timeout for each individual agent step (seconds).
+    agent_timeout_seconds: int = 300
+
+    # Global timeout for an entire pipeline run (seconds).
+    pipeline_timeout_seconds: int = 1800
+
+    # Maximum number of Reviewer → Coder auto-fix loops.
+    max_fix_attempts: int = 3
+
+    # Rate limiting: maximum LLM requests per minute.
+    rate_limit_rpm: int = 30
+
+    # Cost limiting (Groq public pricing, USD).  Run aborts if exceeded.
+    max_cost_usd: float = 5.0
+
+    # Large-repository guard: abort cloning if the repo exceeds this size.
+    max_repo_size_mb: int = 500
+
+    # Large-repository guard: warn and skip deep analysis if file count exceeds this.
+    max_files_in_repo: int = 5000
+
+    # Retry configuration for transient errors (e.g., MCP server timeouts).
+    max_retries: int = 3
+    retry_base_delay_seconds: float = 1.0
+    retry_max_delay_seconds: float = 30.0
+
+    # --- Structured logging --------------------------------------------------
+
+    # Directory where per-session interaction logs (JSONL) are persisted.
+    log_dir: Path = Path("./logs")
+
+    # --- API / WebSocket -----------------------------------------------------
+
+    # Origins allowed to connect to the FastAPI server (CORS + WS).
+    api_cors_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:5173",
+        ]
+    )
+
+    # Host / port for `uvicorn` when launched via `ai-swe serve`.
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000
+
+    # Session store: directory for persisting session state to disk.
+    sessions_dir: Path = Path("./sessions")
+
+    # --- Groq public pricing (per 1 000 000 tokens, USD) ---------------------
+    # Source: https://console.groq.com/settings/limits  (as of 2025-Q1)
+    groq_input_price_per_m: float = 0.59   # llama-3.3-70b-versatile input
+    groq_output_price_per_m: float = 0.79  # llama-3.3-70b-versatile output
+
 
 @lru_cache
 def get_settings() -> Settings:

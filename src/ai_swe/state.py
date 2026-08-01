@@ -16,6 +16,7 @@ All models are Pydantic v2 `BaseModel`s so we get:
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from enum import Enum
 
@@ -139,6 +140,11 @@ class LogEntry(BaseModel):
     agent: str = Field(description="Name of the agent/component that produced this entry.")
     message: str
     level: str = Field(default="info")
+    # Optional structured payload for Logs & Reasoning page.
+    input_summary: str | None = Field(default=None, description="Abbreviated agent input.")
+    decision: str | None = Field(default=None, description="Key decision taken by the agent.")
+    output_summary: str | None = Field(default=None, description="Abbreviated agent output.")
+    execution_time_ms: int | None = Field(default=None, description="Wall-clock ms for this step.")
 
 
 class AgentState(BaseModel):
@@ -149,6 +155,12 @@ class AgentState(BaseModel):
     TypedDict) so it can be validated, logged, and persisted as-is. LangGraph
     natively supports Pydantic models as a graph's state schema.
     """
+
+    # --- Session identity ----------------------------------------------------
+    session_id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        description="Unique ID for this pipeline run, used to correlate logs and WebSocket events.",
+    )
 
     # --- What we're trying to do -------------------------------------------
     task: str = Field(description="Natural-language description of the task to accomplish.")
@@ -192,10 +204,71 @@ class AgentState(BaseModel):
         default=None, description="URL of the pull request opened by the Publisher, if any."
     )
 
-    def add_log(self, agent: str, message: str, level: str = "info") -> AgentState:
-        """Append a log entry and return `self` (for convenient chaining)."""
-        self.logs.append(LogEntry(agent=agent, message=message, level=level))
+    # --- Timing & progress (for dashboard / WebSocket) ------------------------
+    started_at: datetime | None = Field(
+        default=None, description="When the pipeline started running."
+    )
+    finished_at: datetime | None = Field(
+        default=None, description="When the pipeline finished (DONE or FAILED)."
+    )
+    current_agent: str | None = Field(
+        default=None, description="Name of the agent currently executing."
+    )
+    progress: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Overall pipeline progress as a fraction (0–1).",
+    )
+
+    # --- Cost & token accounting (Groq) --------------------------------------
+    total_input_tokens: int = Field(default=0)
+    total_output_tokens: int = Field(default=0)
+    estimated_cost_usd: float = Field(default=0.0)
+
+    # --- Retry counter -------------------------------------------------------
+    retry_count: int = Field(
+        default=0, description="Number of transient-error retries performed across the run."
+    )
+
+    def add_log(
+        self,
+        agent: str,
+        message: str,
+        level: str = "info",
+        *,
+        input_summary: str | None = None,
+        decision: str | None = None,
+        output_summary: str | None = None,
+        execution_time_ms: int | None = None,
+    ) -> AgentState:
+        """Append a structured log entry and return `self` (for convenient chaining)."""
+        self.logs.append(
+            LogEntry(
+                agent=agent,
+                message=message,
+                level=level,
+                input_summary=input_summary,
+                decision=decision,
+                output_summary=output_summary,
+                execution_time_ms=execution_time_ms,
+            )
+        )
         return self
+
+    def update_cost(self, input_tokens: int, output_tokens: int, cost_usd: float) -> AgentState:
+        """Accumulate token usage and estimated cost from a single LLM call."""
+        self.total_input_tokens += input_tokens
+        self.total_output_tokens += output_tokens
+        self.estimated_cost_usd += cost_usd
+        return self
+
+    def elapsed_seconds(self) -> float | None:
+        """Wall-clock seconds since the pipeline started, or None if not started."""
+        if self.started_at is None:
+            return None
+        end = self.finished_at or datetime.now(UTC)
+        return (end - self.started_at).total_seconds()
 
     model_config = {
         "use_enum_values": False,
